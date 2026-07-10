@@ -116,13 +116,11 @@ impl PostgresConversationStorage {
     }
 
     /// Generate a share ID.
+    ///
+    /// Cryptographically random (UUIDv4, 122 bits) so public `/shared/{share_id}`
+    /// links are unguessable and non-enumerable.
     fn generate_share_id() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        format!("share_{}", ts)
+        format!("share_{}", uuid::Uuid::new_v4().simple())
     }
 }
 

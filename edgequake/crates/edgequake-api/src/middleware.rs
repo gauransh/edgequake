@@ -505,6 +505,18 @@ fn is_public_request(state: &crate::state::AppState, method: &Method, path: &str
     ) || (*method == Method::POST
         && normalized_path == "/users"
         && state.auth.config.allow_registration)
+        || is_public_shared_conversation_path(method, normalized_path)
+}
+
+/// Public read-only share links: `GET /shared/{share_id}` (routes.rs `get_shared_conversation`).
+///
+/// Only `GET` with a non-empty `{share_id}` is public — bare `/shared` or `/shared/`
+/// (and any non-`GET` method) still require authentication.
+fn is_public_shared_conversation_path(method: &Method, normalized_path: &str) -> bool {
+    *method == Method::GET
+        && normalized_path
+            .strip_prefix("/shared/")
+            .is_some_and(|share_id| !share_id.is_empty())
 }
 
 /// OpenAPI / Swagger documentation paths (including static assets under subpaths).
@@ -912,6 +924,41 @@ mod tests {
         assert!(config.is_public_path("/health"));
         assert!(config.is_public_path("/swagger-ui/index.html"));
         assert!(!config.is_public_path("/api/v1/documents"));
+    }
+
+    #[test]
+    fn shared_conversation_get_is_public() {
+        let state = crate::state::AppState::test_state();
+        assert!(super::is_public_request(
+            &state,
+            &Method::GET,
+            "/api/v1/shared/abc"
+        ));
+    }
+
+    #[test]
+    fn shared_conversation_non_get_is_not_public() {
+        let state = crate::state::AppState::test_state();
+        assert!(!super::is_public_request(
+            &state,
+            &Method::POST,
+            "/api/v1/shared/abc"
+        ));
+    }
+
+    #[test]
+    fn shared_conversation_empty_id_is_not_public() {
+        let state = crate::state::AppState::test_state();
+        assert!(!super::is_public_request(
+            &state,
+            &Method::GET,
+            "/api/v1/shared/"
+        ));
+        assert!(!super::is_public_request(
+            &state,
+            &Method::GET,
+            "/api/v1/shared"
+        ));
     }
 
     #[test]

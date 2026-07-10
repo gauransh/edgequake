@@ -25,13 +25,10 @@ impl MemoryConversationStorage {
         Self::default()
     }
 
+    /// Cryptographically random share ID (UUIDv4, 122 bits) — matches the
+    /// Postgres adapter so public `/shared/{share_id}` links stay unguessable.
     fn generate_share_id() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        format!("share_{ts}")
+        format!("share_{}", uuid::Uuid::new_v4().simple())
     }
 
     pub async fn create_conversation(

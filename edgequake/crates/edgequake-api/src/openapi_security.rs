@@ -20,6 +20,14 @@ fn classify_path_security(path: &str) -> Option<Vec<SecurityRequirement>> {
         return Some(vec![]);
     }
 
+    // MCP gateway (root `/mcp` + `/api/v1/mcp` alias) authenticates via OAuth 2.1
+    // bearer or API key with no tenant/workspace headers (SPEC-028). Declare it
+    // explicitly so the generic `/api/v1/*` branch below does not attach
+    // tenant-context requirements, and so root `/mcp` is not left as inherited-only.
+    if path == "/mcp" || path == "/api/v1/mcp" {
+        return Some(auth_only());
+    }
+
     if path.contains("/admin/") {
         return Some(auth_only());
     }
@@ -119,6 +127,46 @@ mod tests {
         assert!(obj.contains_key("bearer_auth"));
         assert!(obj.contains_key("tenant_id"));
         assert!(obj.contains_key("workspace_id"));
+    }
+
+    #[test]
+    fn mcp_paths_require_auth_without_tenant_headers() {
+        let doc = ApiDoc::openapi();
+        for path in ["/mcp", "/api/v1/mcp"] {
+            let item = doc
+                .paths
+                .paths
+                .get(path)
+                .unwrap_or_else(|| panic!("{path} in spec"));
+            let post = item.post.as_ref().unwrap_or_else(|| panic!("POST {path}"));
+            let security = post
+                .security
+                .as_ref()
+                .unwrap_or_else(|| panic!("security set for {path}"));
+            assert_eq!(security.len(), 2, "{path} should list two schemes");
+            let first = serde_json::to_value(&security[0]).unwrap();
+            let obj = first.as_object().expect("security object");
+            assert!(obj.contains_key("bearer_auth"), "{path} bearer_auth");
+            assert!(!obj.contains_key("tenant_id"), "{path} no tenant header");
+            let second = serde_json::to_value(&security[1]).unwrap();
+            assert!(
+                second.as_object().unwrap().contains_key("api_key"),
+                "{path} api_key"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_paths_document_unauthorized_response() {
+        let doc = ApiDoc::openapi();
+        for path in ["/mcp", "/api/v1/mcp"] {
+            let item = doc.paths.paths.get(path).expect("mcp path");
+            let post = item.post.as_ref().expect("POST");
+            assert!(
+                post.responses.responses.contains_key("401"),
+                "{path} should document 401"
+            );
+        }
     }
 
     #[test]

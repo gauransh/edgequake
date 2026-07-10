@@ -26,14 +26,20 @@ pub struct McpJsonRpcRequest {
 }
 
 /// OpenAPI schema anchor (runtime uses raw body parsing in [`mcp_handler`]).
+///
+/// Runtime access is gated by [`crate::mcp::auth::mcp_gateway_auth`] (OAuth 2.1
+/// bearer or API key), so the spec must declare `security` and the live 401 —
+/// otherwise API testers classify POST /mcp as public (SPEC-028).
 #[utoipa::path(
     post,
     path = "/mcp",
     tag = "MCP",
+    security(("bearer_auth" = []), ("api_key" = [])),
     request_body = McpJsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC 2.0 response"),
         (status = 202, description = "JSON-RPC notification accepted"),
+        (status = 401, description = "Missing or invalid credentials"),
         (status = 413, description = "Payload too large")
     )
 )]
@@ -59,14 +65,19 @@ pub async fn mcp_handler(
 }
 
 /// OpenAPI schema anchor for `/api/v1/mcp` alias.
+///
+/// Same gateway auth as [`mcp_openapi`]; declare `security` and the 401 so the
+/// alias is not classified as public (SPEC-028).
 #[utoipa::path(
     post,
     path = "/api/v1/mcp",
     tag = "MCP",
+    security(("bearer_auth" = []), ("api_key" = [])),
     request_body = McpJsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC 2.0 response"),
-        (status = 202, description = "JSON-RPC notification accepted")
+        (status = 202, description = "JSON-RPC notification accepted"),
+        (status = 401, description = "Missing or invalid credentials")
     )
 )]
 #[allow(dead_code)]
