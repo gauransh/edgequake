@@ -1,0 +1,31 @@
+name: build-staging-image
+on:
+  push:
+    branches: [staging-fixes-v0.14.2]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: edgequake
+          file: edgequake/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: edgequake:staging-fixes
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Save image tarball
+        run: |
+          docker save edgequake:staging-fixes | gzip -1 > edgequake-staging.tar.gz
+          ls -lh edgequake-staging.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: edgequake-staging-image
+          path: edgequake-staging.tar.gz
+          retention-days: 3
