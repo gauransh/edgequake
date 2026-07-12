@@ -1143,6 +1143,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_prefix_count_recovers_untagged_entities() {
+        // issue #16: entities missing the workspace_id tag are still counted by
+        // their source reference to the workspace's documents.
+        use crate::traits::GraphStorageAnalyticsOps;
+        let storage = MemoryGraphStorage::new("test");
+
+        let mut e1 = HashMap::new();
+        e1.insert(
+            "source_ids".to_string(),
+            serde_json::json!(["doc-a-chunk-0"]),
+        );
+        // NOTE: no workspace_id property on purpose.
+        storage.upsert_node("E1", e1).await.unwrap();
+
+        let mut e2 = HashMap::new();
+        e2.insert("source_id".to_string(), serde_json::json!("doc-b-chunk-3"));
+        storage.upsert_node("E2", e2).await.unwrap();
+
+        let mut e3 = HashMap::new();
+        e3.insert(
+            "source_ids".to_string(),
+            serde_json::json!(["doc-z-chunk-1"]),
+        );
+        storage.upsert_node("E3", e3).await.unwrap();
+
+        let workspace_docs = vec!["doc-a".to_string(), "doc-b".to_string()];
+        let count = storage
+            .node_count_by_source_prefixes(&workspace_docs)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "E1+E2 belong to workspace docs, E3 does not");
+
+        assert_eq!(
+            storage.node_count_by_source_prefixes(&[]).await.unwrap(),
+            0,
+            "no prefixes → zero"
+        );
+    }
+
+    #[tokio::test]
     async fn test_graph_traversal() {
         let storage = MemoryGraphStorage::new("test");
 

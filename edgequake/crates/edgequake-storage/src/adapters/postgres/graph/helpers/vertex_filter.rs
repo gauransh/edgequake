@@ -203,6 +203,55 @@ mod tests {
     }
 
     #[test]
+    fn vertex_count_sql_is_a_real_count_with_workspace_filter() {
+        // issue #16: stats/list must COUNT(*) in the graph — never len(page).
+        let filter = NodeListFilter {
+            workspace_id: Some("ws-1".into()),
+            ..Default::default()
+        };
+        let sql = PostgresAGEGraphStorage::vertex_count_sql("g", "v", &filter);
+        assert!(sql.contains("COUNT(*)"), "must aggregate: {sql}");
+        assert!(
+            sql.contains("_ag_label_vertex"),
+            "must hit vertex table: {sql}"
+        );
+        assert!(
+            sql.contains("workspace_id' = 'ws-1'"),
+            "workspace scoped: {sql}"
+        );
+        assert!(
+            !sql.to_uppercase().contains("LIMIT"),
+            "count must not paginate: {sql}"
+        );
+    }
+
+    #[test]
+    fn vertex_count_sql_unfiltered_has_no_where() {
+        let sql = PostgresAGEGraphStorage::vertex_count_sql("g", "v", &NodeListFilter::default());
+        assert!(sql.contains("COUNT(*)"));
+        assert!(!sql.contains("WHERE"), "empty filter → global count: {sql}");
+    }
+
+    #[test]
+    fn edge_count_sql_is_a_real_count_with_workspace_filter() {
+        let filter = EdgeListFilter {
+            workspace_id: Some("ws-1".into()),
+            ..Default::default()
+        };
+        let sql = PostgresAGEGraphStorage::edge_count_sql("g", "e", &filter);
+        assert!(sql.contains("COUNT(*)"), "must aggregate: {sql}");
+        assert!(sql.contains("_ag_label_edge"), "must hit edge table: {sql}");
+        assert!(
+            sql.contains("workspace_id' = 'ws-1'"),
+            "workspace scoped: {sql}"
+        );
+        assert!(
+            !sql.to_uppercase().contains("LIMIT"),
+            "count must not paginate: {sql}"
+        );
+    }
+
+    #[test]
     fn edge_strict_vs_legacy_tenant_filter() {
         let filter = EdgeListFilter {
             tenant_id: Some("t1".into()),

@@ -83,4 +83,43 @@ pub trait GraphStorageAnalyticsOps: GraphStorageReadOps + GraphScanOps {
             .count();
         Ok(count)
     }
+
+    /// Count distinct nodes whose `source_ids` reference ANY of the given
+    /// document prefixes (issue #16).
+    ///
+    /// WHY: workspace entity stats derived purely from the `workspace_id` node
+    /// property under-report ~40x when entity nodes were persisted without a
+    /// (consistent) `workspace_id` tag. Counting the entities actually derived
+    /// from the workspace's documents — via the same source-reference mechanism
+    /// the per-document `entity_count` already trusts — recovers the honest
+    /// count. Callers take `max(property_count, source_count)` so a correctly
+    /// tagged graph is unaffected while an under-tagged one is repaired.
+    ///
+    /// Default: scans via `find_nodes_by_source_prefixes`; adapters SHOULD
+    /// override with a single aggregate SQL for O(log N).
+    async fn node_count_by_source_prefixes(&self, prefixes: &[String]) -> Result<usize> {
+        use super::graph_scan_ops::NodeListFilter;
+        if prefixes.is_empty() {
+            return Ok(0);
+        }
+        let filter = NodeListFilter::default();
+        let nodes = self
+            .find_nodes_by_source_prefixes(&filter, prefixes)
+            .await?;
+        Ok(nodes.len())
+    }
+
+    /// Count distinct edges whose `source_id` references ANY of the given
+    /// document prefixes (issue #16). See [`node_count_by_source_prefixes`].
+    async fn edge_count_by_source_prefixes(&self, prefixes: &[String]) -> Result<usize> {
+        use super::graph_scan_ops::EdgeListFilter;
+        if prefixes.is_empty() {
+            return Ok(0);
+        }
+        let filter = EdgeListFilter::default();
+        let edges = self
+            .find_edges_by_source_prefixes(&filter, prefixes)
+            .await?;
+        Ok(edges.len())
+    }
 }
