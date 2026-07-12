@@ -14,7 +14,8 @@
 //!   POSTGRES_PASSWORD=edgequake_secret \
 //!   cargo test --package edgequake-api --test e2e_document_deletion_postgres --features postgres
 
-#![cfg(feature = "postgres")]
+// Constructs PostgresAGEGraphStorage directly, so gate on the AGE backend.
+#![cfg(feature = "age-graph")]
 
 use std::collections::HashMap;
 use std::env;

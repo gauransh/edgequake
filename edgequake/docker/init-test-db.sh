@@ -3,23 +3,20 @@
 # EdgeQuake Test Database Initialization Script
 # ============================================================================
 #
-# Unified test DB: pgvector + Apache AGE (mirrors production Dockerfile.postgres).
+# Unified test DB: pgvector (mirrors production Dockerfile.postgres).
+# Graph storage uses PostgresRelationalGraphStorage (no Apache AGE required).
 # Used by docker-compose.test.yml postgres-test on port 5433.
 #
 # ============================================================================
 
 set -e
 
-echo "==> Initializing EdgeQuake test database (pgvector + AGE)..."
+echo "==> Initializing EdgeQuake test database (pgvector)..."
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    -- Vector + graph extensions (production parity)
+    -- Vector extension (production parity)
     CREATE EXTENSION IF NOT EXISTS vector;
-    CREATE EXTENSION IF NOT EXISTS age;
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
-    LOAD 'age';
-    SET search_path = ag_catalog, "\$user", public;
 
     -- Application user (non-superuser) for RLS testing
     DO \$\$
@@ -31,7 +28,6 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 
     GRANT CONNECT ON DATABASE $POSTGRES_DB TO app_user;
     GRANT USAGE ON SCHEMA public TO app_user;
-    GRANT USAGE ON SCHEMA ag_catalog TO app_user;
 
     ALTER DATABASE $POSTGRES_DB SET app.current_tenant_id TO '';
     ALTER DATABASE $POSTGRES_DB SET app.current_workspace_id TO '';
@@ -54,7 +50,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     END;
     \$func\$ LANGUAGE plpgsql STABLE;
 
-    \echo 'Test database extensions (vector + age) created successfully!'
+    \echo 'Test database extensions (vector) created successfully!'
 EOSQL
 
 echo "==> Running migrations..."
@@ -68,7 +64,6 @@ done
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
-    GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO app_user;
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app_user;
     \echo 'Permissions granted to app_user!'

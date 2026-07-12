@@ -33,12 +33,14 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- Apache AGE for graph database (optional)
-DO $$ 
+DO $$
 BEGIN
-    CREATE EXTENSION IF NOT EXISTS "age" CASCADE;
-    RAISE NOTICE 'Apache AGE extension enabled successfully';
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Apache AGE extension not available: %. Graph features will use fallback storage.', SQLERRM;
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'age') THEN
+        CREATE EXTENSION IF NOT EXISTS "age" CASCADE;
+        RAISE NOTICE 'Apache AGE extension enabled successfully';
+    ELSE
+        RAISE NOTICE 'Apache AGE not available — skipping (relational graph backend)';
+    END IF;
 END $$;
 
 -- ============================================================================

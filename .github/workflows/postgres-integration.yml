@@ -194,14 +194,15 @@ jobs:
           echo "Running all integration tests..."
           cargo test --all --features postgres -- --test-threads=2
 
-  postgres-age-tests:
-    name: PostgreSQL AGE Graph Tests
+  postgres-graph-tests:
+    name: PostgreSQL Graph Contract Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     services:
-      postgres-age:
-        # WHY: storage_backend_contract + migration bootstrap need pgvector + AGE (apache/age has AGE only).
+      postgres-graph:
+        # WHY: storage_backend_contract + migration bootstrap need pgvector.
+        # Graph storage uses PostgresRelationalGraphStorage (no Apache AGE).
         image: ghcr.io/raphaelmansuy/edgequake-postgres:latest
         env:
           POSTGRES_DB: edgequake_test
@@ -228,11 +229,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: edgequake
-          key: postgres-age
+          key: postgres-graph
 
-      - name: Wait for PostgreSQL with AGE
+      - name: Wait for PostgreSQL
         run: |
-          echo "Waiting for PostgreSQL with AGE extension to be ready..."
+          echo "Waiting for PostgreSQL to be ready..."
           for i in {1..60}; do
             if pg_isready -h localhost -p 5432 -U edgequake_test -d edgequake_test 2>/dev/null; then
               echo "PostgreSQL is ready!"
@@ -249,9 +250,6 @@ jobs:
         run: |
           PGPASSWORD=test_password_123 psql -h localhost -p 5432 -U edgequake_test -d edgequake_test << 'EOSQL'
             CREATE EXTENSION IF NOT EXISTS vector;
-            CREATE EXTENSION IF NOT EXISTS age;
-            LOAD 'age';
-            SET search_path = ag_catalog, "$user", public;
           EOSQL
 
       - name: Run SPEC-017 storage backend contracts (postgres)
@@ -265,7 +263,8 @@ jobs:
           cargo test -p edgequake-storage --test storage_backend_contract --features postgres -- --test-threads=1
           cargo test -p edgequake-storage --test backend_e2e_contract --features postgres -- --test-threads=1
           cargo test -p edgequake-storage --test graph_isp_contract --features postgres -- --test-threads=1
-        continue-on-error: true # graph_batch_upsert uses parameterized Cypher; AGE rejects inline agtype (tracked)
+          cargo test -p edgequake-storage --lib --features postgres -- --test-threads=1
+        continue-on-error: false # relational backend compiles + runs under plain postgres (SPEC-017)
 
       - name: Run SPEC-006 migration bootstrap postgres e2e
         working-directory: edgequake
@@ -277,13 +276,6 @@ jobs:
           cargo test -p edgequake-api --test migration_bootstrap_proof --features postgres -- --test-threads=1
           cargo test -p edgequake-api --test migration_readiness_proof --features postgres -- --test-threads=1
         continue-on-error: false
-
-      - name: Run PostgreSQL AGE Graph Tests
-        working-directory: edgequake
-        run: |
-          echo "Running PostgreSQL AGE graph integration tests..."
-          cargo test --package edgequake-storage --test postgres_integration --features postgres -- test_postgres_age --test-threads=1
-        continue-on-error: true # AGE tests may fail if extension setup differs
 
   coverage-postgres:
     # WHY: Tarpaulin across the PostgreSQL feature set is significantly slower
@@ -338,9 +330,6 @@ jobs:
         run: |
           PGPASSWORD=test_password_123 psql -h localhost -p 5432 -U edgequake_test -d edgequake_test << 'EOSQL'
             CREATE EXTENSION IF NOT EXISTS vector;
-            CREATE EXTENSION IF NOT EXISTS age;
-            LOAD 'age';
-            SET search_path = ag_catalog, "$user", public;
 
             DO $$
             BEGIN
@@ -351,11 +340,10 @@ jobs:
 
             GRANT CONNECT ON DATABASE edgequake_test TO app_user;
             GRANT USAGE ON SCHEMA public TO app_user;
-            GRANT USAGE ON SCHEMA ag_catalog TO app_user;
             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
           EOSQL
 
-          # Run migrations with strict error handling now that the service image contains both extensions
+          # Run migrations with strict error handling (pgvector only; graph is relational SQL)
           for file in edgequake/migrations/*.sql; do
             echo "Applying migration: $file"
             PGPASSWORD=test_password_123 psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U edgequake_test -d edgequake_test -f "$file"
@@ -364,7 +352,6 @@ jobs:
           PGPASSWORD=test_password_123 psql -h localhost -p 5432 -U edgequake_test -d edgequake_test << 'EOSQL'
             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user;
             GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_user;
-            GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO app_user;
           EOSQL
 
       - name: Generate PostgreSQL-specific coverage

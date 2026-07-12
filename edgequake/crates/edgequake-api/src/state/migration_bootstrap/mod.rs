@@ -9,6 +9,8 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 
 /// Size-aware index DDL — SSOT: `migrations/support/038/apply.sql`
+/// AGE-only reconcile SQL; compiled for the `age-graph` backend and the test suite.
+#[cfg(any(test, feature = "age-graph"))]
 pub(super) const SQL_038_APPLY: &str =
     include_str!("../../../../../migrations/support/038/apply.sql");
 
@@ -37,6 +39,8 @@ pub(super) const SQL_045_APPLY: &str =
     include_str!("../../../../../migrations/support/045/apply.sql");
 
 /// Graph tenant isolation perf indexes — SSOT: `migrations/support/046/apply.sql`
+/// AGE-only reconcile SQL; compiled for the `age-graph` backend and the test suite.
+#[cfg(any(test, feature = "age-graph"))]
 pub(super) const SQL_046_APPLY: &str =
     include_str!("../../../../../migrations/support/046/apply.sql");
 
@@ -117,6 +121,8 @@ pub(super) const SQL_065_APPLY: &str =
     include_str!("../../../../../migrations/support/065/apply.sql");
 
 /// AGE child Node workspace indexes — SSOT: `migrations/support/078/apply.sql`
+/// AGE-only reconcile SQL; compiled only for the `age-graph` backend.
+#[cfg(feature = "age-graph")]
 pub(super) const SQL_078_APPLY: &str =
     include_str!("../../../../../migrations/support/078/apply.sql");
 
@@ -127,6 +133,9 @@ pub(super) const SQL_080_APPLY: &str =
 /// AGE graph RLS policies — SSOT: `migrations/support/081/apply.sql`
 pub(super) const SQL_081_APPLY: &str =
     include_str!("../../../../../migrations/support/081/apply.sql");
+
+/// sqlx migration version marker for the initial schema (AGE extension guard).
+pub const MIGRATION_001_VERSION: i64 = 1;
 
 /// sqlx migration version marker (no blocking DDL in sqlx file).
 pub const MIGRATION_038_VERSION: i64 = 38;
@@ -222,6 +231,57 @@ pub const MIGRATION_080_VERSION: i64 = 80;
 pub const MIGRATION_081_VERSION: i64 = 81;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+
+/// Migrations whose SQL requires the Apache AGE binary (extension objects,
+/// `ag_catalog` DDL, graphid casts). On a non-AGE deployment these are skipped so
+/// a pgvector-only Postgres bootstraps cleanly. Copies already applied on an
+/// existing AGE database stay recorded and validated (checksums) — never re-run.
+const AGE_ONLY_MIGRATIONS: &[i64] = &[13, 43, 67, 70, 75, 76, 78, 79, 81];
+
+/// True when this binary should manage AGE-specific schema: compiled with the
+/// `age-graph` feature AND `EDGEQUAKE_GRAPH_BACKEND=age`.
+fn age_backend_active() -> bool {
+    #[cfg(feature = "age-graph")]
+    {
+        std::env::var("EDGEQUAKE_GRAPH_BACKEND")
+            .map(|v| v.eq_ignore_ascii_case("age"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "age-graph"))]
+    {
+        false
+    }
+}
+
+/// Build the effective migrator for this run.
+///
+/// When the AGE backend is inactive, AGE-only migrations are dropped from the run
+/// set (so they are never applied on a pgvector-only Postgres) and `ignore_missing`
+/// is enabled so an existing AGE database — where those versions are already
+/// recorded — still passes sqlx's applied-migration validation.
+fn effective_migrator(age_active: bool) -> sqlx::migrate::Migrator {
+    if age_active {
+        sqlx::migrate::Migrator {
+            migrations: MIGRATOR.migrations.clone(),
+            ignore_missing: MIGRATOR.ignore_missing,
+            locking: MIGRATOR.locking,
+            no_tx: MIGRATOR.no_tx,
+        }
+    } else {
+        sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                MIGRATOR
+                    .iter()
+                    .filter(|m| !AGE_ONLY_MIGRATIONS.contains(&m.version))
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: true,
+            locking: MIGRATOR.locking,
+            no_tx: MIGRATOR.no_tx,
+        }
+    }
+}
 
 /// Outcome of bootstrap migration run (surfaced in `/health` and `/ready`).
 #[derive(Debug, Clone)]
@@ -644,8 +704,31 @@ pub async fn run_postgres_migrations(
         "Database migration bootstrap starting"
     );
 
+    let age_active = age_backend_active();
+    let migrator = effective_migrator(age_active);
+
+    // AGE-only migrations excluded from this run (non-AGE backend). Recorded as
+    // skipped — never inserted into `_sqlx_migrations`, never applied.
+    let skipped_age_migrations: Vec<i64> = if age_active {
+        Vec::new()
+    } else {
+        MIGRATOR
+            .iter()
+            .map(|m| m.version)
+            .filter(|v| AGE_ONLY_MIGRATIONS.contains(v))
+            .collect()
+    };
+    for version in &skipped_age_migrations {
+        info!(
+            target: "edgequake.migration",
+            step = "age_migration_skipped",
+            version = *version,
+            "AGE-only migration skipped (EDGEQUAKE_GRAPH_BACKEND is not 'age' or age-graph not built)"
+        );
+    }
+
     let applied_before = fetch_applied_versions(pool).await?;
-    let pending: Vec<_> = MIGRATOR
+    let pending: Vec<_> = migrator
         .migrations
         .iter()
         .filter(|m| !applied_before.contains(&m.version))
@@ -656,6 +739,7 @@ pub async fn run_postgres_migrations(
         step = "preflight",
         applied = applied_before.len(),
         pending = pending.len(),
+        skipped_age = skipped_age_migrations.len(),
         latest_applied = applied_before.iter().max().copied(),
         "Migration preflight complete"
     );
@@ -668,6 +752,14 @@ pub async fn run_postgres_migrations(
             version = migration.version,
             description = %migration.description,
             "Pending migration queued"
+        );
+    }
+
+    if reconcile::repair_migration_001_checksum_if_needed(pool).await? {
+        info!(
+            target: "edgequake.migration",
+            step = "migration_001_checksum_repaired",
+            "AGE-guard → relational-graph M001 checksum reconciled before sqlx run"
         );
     }
 
@@ -700,7 +792,7 @@ pub async fn run_postgres_migrations(
             count = pending.len(),
             "Applying sqlx migrations (advisory lock held)"
         );
-        MIGRATOR.run(pool).await?;
+        migrator.run(pool).await?;
         info!(
             target: "edgequake.migration",
             step = "sqlx_complete",

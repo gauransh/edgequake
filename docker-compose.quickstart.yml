@@ -33,7 +33,11 @@
 #     OLLAMA_EMBEDDING_MODEL=embeddinggemma docker compose -f docker-compose.quickstart.yml up -d
 
 services:
-  # ── PostgreSQL with pgvector + Apache AGE ──────────────────────────────────
+  # ── PostgreSQL with pgvector ───────────────────────────────────────────────
+  # Graph storage uses PostgresRelationalGraphStorage (no Apache AGE required).
+  # This ref is the upstream image (ghcr.io/raphaelmansuy): the AGE extension may
+  # be present but is unused by the relational backend. Repoint this image to the
+  # fork's own registry once it publishes AGE-free builds.
   postgres:
     image: ghcr.io/raphaelmansuy/edgequake-postgres:${EDGEQUAKE_VERSION:-latest}
     container_name: edgequake-postgres

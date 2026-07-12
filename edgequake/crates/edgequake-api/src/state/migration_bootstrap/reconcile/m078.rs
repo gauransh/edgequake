@@ -7,11 +7,18 @@
 use std::collections::HashSet;
 
 use sqlx::PgPool;
-use tracing::{info, warn};
+use tracing::info;
 
-use super::super::{MIGRATION_078_VERSION, MIGRATION_079_VERSION, SQL_078_APPLY};
+use super::super::MIGRATION_078_VERSION;
+
+#[cfg(feature = "age-graph")]
 use super::execute_bootstrap_apply_sql;
+#[cfg(feature = "age-graph")]
+use super::super::{MIGRATION_079_VERSION, SQL_078_APPLY};
+#[cfg(feature = "age-graph")]
+use tracing::warn;
 
+#[cfg(feature = "age-graph")]
 const CHILD_NODE_INDEXES: &[&str] = &[
     "idx_node_workspace_id",
     "idx_node_tenant_id",
@@ -70,7 +77,18 @@ pub async fn repair_migration_078_checksum_if_needed(pool: &PgPool) -> Result<bo
     Ok(true)
 }
 
+/// Non-AGE build: child Node/EDGE tables only exist under Apache AGE, so there is
+/// nothing to reconcile.
+#[cfg(not(feature = "age-graph"))]
+pub async fn reconcile_migration_078(
+    _pool: &PgPool,
+    _applied_after: &HashSet<i64>,
+) -> Result<bool, sqlx::Error> {
+    Ok(false)
+}
+
 /// After sqlx: ensure child-table indexes exist when M078/M079 marker present.
+#[cfg(feature = "age-graph")]
 pub async fn reconcile_migration_078(
     pool: &PgPool,
     applied_after: &HashSet<i64>,
@@ -119,6 +137,7 @@ pub async fn reconcile_migration_078(
     Ok(true)
 }
 
+#[cfg(feature = "age-graph")]
 async fn audit_missing_child_indexes(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct GraphRow {

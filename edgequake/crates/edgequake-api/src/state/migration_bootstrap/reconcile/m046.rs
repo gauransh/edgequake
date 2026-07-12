@@ -4,11 +4,16 @@ use std::collections::HashSet;
 
 use sqlx::PgPool;
 
+use super::super::Migration046Report;
+
+#[cfg(feature = "age-graph")]
 use super::execute_bootstrap_apply_sql;
+#[cfg(feature = "age-graph")]
+use super::super::{MIGRATION_046_VERSION, SQL_046_APPLY};
+#[cfg(feature = "age-graph")]
 use tracing::{info, warn};
 
-use super::super::{Migration046Report, MIGRATION_046_VERSION, SQL_046_APPLY};
-
+#[cfg(feature = "age-graph")]
 const REQUIRED_VERTEX_SUFFIXES: &[&str] = &[
     "_tenant_id",
     "_workspace_id",
@@ -16,9 +21,27 @@ const REQUIRED_VERTEX_SUFFIXES: &[&str] = &[
     "_node_id",
 ];
 
+#[cfg(feature = "age-graph")]
 const REQUIRED_EDGE_SUFFIXES: &[&str] =
     &["_edge_source_id", "_edge_target_id", "_ag_edge_start_id"];
 
+/// Non-AGE build: the tenant-isolation perf indexes target AGE graph tables that
+/// are absent, so this is a no-op reporting nothing missing.
+#[cfg(not(feature = "age-graph"))]
+pub async fn reconcile_migration_046(
+    _pool: &PgPool,
+    _applied_after: &HashSet<i64>,
+    _applied_this_run: &[i64],
+) -> Result<Migration046Report, sqlx::Error> {
+    Ok(Migration046Report {
+        marker_present: false,
+        apply_executed: false,
+        graphs_checked: 0,
+        missing_indexes: Vec::new(),
+    })
+}
+
+#[cfg(feature = "age-graph")]
 pub async fn reconcile_migration_046(
     pool: &PgPool,
     applied_after: &HashSet<i64>,
@@ -69,6 +92,7 @@ pub async fn reconcile_migration_046(
     })
 }
 
+#[cfg(feature = "age-graph")]
 async fn count_graphs(pool: &PgPool) -> Result<usize, sqlx::Error> {
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM ag_catalog.ag_graph")
         .fetch_one(pool)
@@ -76,6 +100,7 @@ async fn count_graphs(pool: &PgPool) -> Result<usize, sqlx::Error> {
     Ok(n as usize)
 }
 
+#[cfg(feature = "age-graph")]
 async fn audit_required_indexes(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct GraphRow {
@@ -122,6 +147,7 @@ async fn audit_required_indexes(pool: &PgPool) -> Result<Vec<String>, sqlx::Erro
     Ok(missing)
 }
 
+#[cfg(feature = "age-graph")]
 async fn index_exists(pool: &PgPool, schema: &str, index_name: &str) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS(

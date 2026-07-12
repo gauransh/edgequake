@@ -118,9 +118,13 @@ pub use adapters::memory::{
 // Conditionally export PostgreSQL adapters
 #[cfg(feature = "postgres")]
 pub use adapters::postgres::{
-    PgVectorStorage, PgWorkspaceVectorRegistry, PostgresAGEGraphStorage, PostgresConfig,
-    PostgresConversationStorage, PostgresKVStorage, PostgresPdfStorage, PostgresPool,
+    PgVectorStorage, PgWorkspaceVectorRegistry, PostgresConfig, PostgresConversationStorage,
+    PostgresKVStorage, PostgresPdfStorage, PostgresPool, PostgresRelationalGraphStorage,
 };
+
+// Apache AGE graph adapter — only compiled with the opt-in `age-graph` feature.
+#[cfg(all(feature = "postgres", feature = "age-graph"))]
+pub use adapters::postgres::PostgresAGEGraphStorage;
 
 // Re-export KV key schema for use across all crates
 pub use kv_key_schema::kv_keys;

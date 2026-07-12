@@ -14,6 +14,9 @@ impl PostgresAGEGraphStorage {
         }
 
         self.pool.initialize().await?;
+        // AGE is no longer created by the shared pool's extension setup; the AGE
+        // backend owns its extension bootstrap here.
+        self.pool.ensure_age_extension().await?;
         self.create_graph().await?;
 
         // CRITICAL: Create indexes for query performance

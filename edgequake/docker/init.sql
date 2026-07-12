@@ -16,14 +16,9 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;          -- Trigram similarity for fuzzy
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";      -- UUID generation (legacy support)
 CREATE EXTENSION IF NOT EXISTS btree_gin;        -- GIN support for btree operators
 
--- Try to load AGE if available (optional for graph queries)
-DO $$
-BEGIN
-    CREATE EXTENSION IF NOT EXISTS age;
-    SET search_path = ag_catalog, "$user", public;
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Apache AGE not available, using relational graph storage';
-END $$;
+-- Graph storage uses PostgresRelationalGraphStorage (plain SQL tables).
+-- Apache AGE is no longer created here; opt in with an AGE-enabled image and
+-- EDGEQUAKE_GRAPH_BACKEND=age if you need the AGE backend.
 
 -- ============================================================================
 -- PHASE 1: ROLES AND SECURITY
@@ -680,62 +675,14 @@ CREATE INDEX IF NOT EXISTS idx_rls_audit_tenant
     ON rls_audit_log(tenant_id, event_time DESC);
 
 -- ============================================================================
--- PHASE 7.1: AGE GRAPH INDEXES (CRITICAL FOR PERFORMANCE)
+-- PHASE 7.1: GRAPH INDEXES
 -- ============================================================================
 --
--- Apache AGE creates these internal tables for graph storage:
--- - <graph_name>._ag_label_vertex (stores nodes)
--- - <graph_name>._ag_label_edge (stores edges)
---
--- Without indexes, graph queries timeout on large graphs (10k+ nodes).
--- These indexes provide 10-100x speedup for degree calculation and filtering.
-
-DO $$ 
-DECLARE
-    graph_name TEXT := 'edgequake_graph';
-BEGIN
-    -- Check if AGE graph exists
-    IF EXISTS (
-        SELECT 1 FROM ag_catalog.ag_graph WHERE name = graph_name
-    ) THEN
-        RAISE NOTICE 'Creating AGE performance indexes for graph: %', graph_name;
-        
-        -- Index on edge start_id for outbound degree calculation
-        -- Used by: GROUP BY start_id in get_popular_nodes_with_degree
-        -- Impact: 10x faster degree counting
-        EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ag_edge_start_id 
-            ON %I._ag_label_edge(start_id)', graph_name);
-        
-        -- Index on edge end_id for inbound degree calculation
-        -- Used by: Reverse relationship queries
-        EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ag_edge_end_id 
-            ON %I._ag_label_edge(end_id)', graph_name);
-        
-        -- Composite index for bi-directional lookups
-        -- Used by: Finding specific edges between nodes
-        EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ag_edge_start_end 
-            ON %I._ag_label_edge(start_id, end_id)', graph_name);
-        
-        -- GIN index on vertex properties for fast JSONB filtering
-        -- Used by: WHERE conditions on tenant_id, workspace_id, entity_type
-        -- Impact: 100x faster filtered queries
-        EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ag_vertex_props_gin 
-            ON %I._ag_label_vertex USING GIN(properties)', graph_name);
-        
-        -- Index on vertex id for primary key lookups
-        EXECUTE format('CREATE INDEX IF NOT EXISTS idx_ag_vertex_id 
-            ON %I._ag_label_vertex(id)', graph_name);
-        
-        RAISE NOTICE 'AGE indexes created successfully';
-    ELSE
-        RAISE NOTICE 'AGE graph "%" not found - skipping graph indexes', graph_name;
-    END IF;
-EXCEPTION 
-    WHEN undefined_table THEN
-        RAISE NOTICE 'AGE extension not installed or graph not created - skipping graph indexes';
-    WHEN OTHERS THEN
-        RAISE WARNING 'Failed to create AGE indexes: %', SQLERRM;
-END $$;
+-- Graph storage uses PostgresRelationalGraphStorage — nodes and edges live in
+-- plain SQL tables created and indexed by the SQLx migrations in the Rust app.
+-- No Apache AGE internal-table indexes are created here. If you opt into the
+-- AGE backend (EDGEQUAKE_GRAPH_BACKEND=age) with an AGE-enabled image, the
+-- application applies AGE-specific indexes via the age-graph feature path.
 
 -- ============================================================================
 -- PHASE 8: RLS CONTEXT FUNCTIONS

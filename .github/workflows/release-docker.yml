@@ -398,8 +398,8 @@ jobs:
           | \`ghcr.io/raphaelmansuy/edgequake:${VERSION}\` | linux/amd64, linux/arm64 |
           | \`ghcr.io/raphaelmansuy/edgequake-frontend:${VERSION}\` | linux/amd64, linux/arm64 |
           | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}\` | linux/amd64, linux/arm64 | **PG18** (recommended default) |
-          | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}-pg16\` | linux/amd64, linux/arm64 | PG16 legacy (AGE 1.6.0) |
-          | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}-pg17\` | linux/amd64, linux/arm64 | PG17 modern (AGE 1.7.0) |
+          | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}-pg16\` | linux/amd64, linux/arm64 | PG16 legacy (pgvector) |
+          | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}-pg17\` | linux/amd64, linux/arm64 | PG17 modern (pgvector) |
           | \`ghcr.io/raphaelmansuy/edgequake-postgres:${VERSION}-pg18\` | linux/amd64, linux/arm64 | PG18 explicit tag |
 
           Full CHANGELOG: https://github.com/raphaelmansuy/edgequake/blob/edgequake-main/CHANGELOG.md"

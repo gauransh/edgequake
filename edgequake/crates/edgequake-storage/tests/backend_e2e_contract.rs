@@ -112,14 +112,12 @@ mod postgres_test_config;
 
 #[cfg(feature = "postgres")]
 mod postgres_backend_contract {
-    use super::{
-        graph_batch_contract, graph_e2e_contract, kv_e2e_contract, postgres_test_config,
-        vector_e2e_contract,
-    };
-    use edgequake_storage::{
-        GraphStorage, GraphStorageMutateOps, KVStorage, PgVectorStorage, PostgresAGEGraphStorage,
-        PostgresKVStorage, VectorStorage,
-    };
+    use super::{kv_e2e_contract, postgres_test_config, vector_e2e_contract};
+    #[cfg(feature = "age-graph")]
+    use super::{graph_batch_contract, graph_e2e_contract};
+    use edgequake_storage::{KVStorage, PgVectorStorage, PostgresKVStorage, VectorStorage};
+    #[cfg(feature = "age-graph")]
+    use edgequake_storage::{GraphStorage, GraphStorageMutateOps, PostgresAGEGraphStorage};
 
     macro_rules! require_postgres_kv {
         () => {{
@@ -152,6 +150,7 @@ mod postgres_backend_contract {
         }};
     }
 
+    #[cfg(feature = "age-graph")]
     macro_rules! require_postgres_graph {
         () => {{
             let config = match postgres_test_config::contract_postgres_config("backend_graph") {
@@ -198,17 +197,20 @@ mod postgres_backend_contract {
         require_postgres_vector,
         vector_e2e_contract::assert_vector_query
     );
+    #[cfg(feature = "age-graph")]
     postgres_backend_contract!(
         postgres_graph_node_crud_e2e_contract,
         require_postgres_graph,
         graph_e2e_contract::assert_graph_node_crud
     );
+    #[cfg(feature = "age-graph")]
     postgres_backend_contract!(
         postgres_graph_edge_crud_e2e_contract,
         require_postgres_graph,
         graph_e2e_contract::assert_graph_edge_crud
     );
 
+    #[cfg(feature = "age-graph")]
     #[tokio::test]
     async fn postgres_graph_batch_e2e_contract() {
         let storage = require_postgres_graph!();

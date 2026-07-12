@@ -14,8 +14,10 @@ use edgequake_core::{ConversationServiceImpl, WorkspaceServiceImpl};
 use edgequake_rate_limiter::{RateLimitConfig as TokenBucketConfig, RateLimiter};
 use edgequake_storage::{
     traits::{GraphStorage, KVStorage, VectorStorage},
-    PgVectorStorage, PgWorkspaceVectorRegistry, PostgresAGEGraphStorage, PostgresKVStorage,
+    PgVectorStorage, PgWorkspaceVectorRegistry, PostgresKVStorage, PostgresRelationalGraphStorage,
 };
+#[cfg(feature = "age-graph")]
+use edgequake_storage::PostgresAGEGraphStorage;
 impl AppState {
     /// Load path validation configuration from environment.
     ///
@@ -250,10 +252,42 @@ impl AppState {
             pg_config.clone(),
             embedding_dim,
         ));
-        let graph_storage = Arc::new(PostgresAGEGraphStorage::with_pool(
-            storage_pool.clone(),
-            pg_config.clone(),
-        ));
+        // SPEC-042-E: graph backend is selectable via EDGEQUAKE_GRAPH_BACKEND.
+        // Default is the plain-relational adapter (no Apache AGE); "age" requires
+        // a binary compiled with the `age-graph` feature.
+        let graph_backend =
+            std::env::var("EDGEQUAKE_GRAPH_BACKEND").unwrap_or_else(|_| "relational".to_string());
+        let graph_storage: Arc<dyn GraphStorage> = match graph_backend.as_str() {
+            "relational" => Arc::new(PostgresRelationalGraphStorage::with_pool(
+                storage_pool.clone(),
+                pg_config.clone(),
+            )),
+            "age" => {
+                #[cfg(feature = "age-graph")]
+                {
+                    Arc::new(PostgresAGEGraphStorage::with_pool(
+                        storage_pool.clone(),
+                        pg_config.clone(),
+                    ))
+                }
+                #[cfg(not(feature = "age-graph"))]
+                {
+                    return Err(
+                        "EDGEQUAKE_GRAPH_BACKEND=age requires a build with the `age-graph` \
+                         feature; this binary was compiled without it. Rebuild with \
+                         --features age-graph or set EDGEQUAKE_GRAPH_BACKEND=relational."
+                            .into(),
+                    );
+                }
+            }
+            other => {
+                return Err(format!(
+                    "Unknown EDGEQUAKE_GRAPH_BACKEND='{other}'. \
+                     Valid values: relational (default), age."
+                )
+                .into());
+            }
+        };
 
         // OODA-228: Ensure default vector storage has correct dimension BEFORE initialize
         // WHY: If embedding provider changed (e.g., OpenAI 1536 → Ollama 768),
@@ -272,21 +306,20 @@ impl AppState {
         // Initialize storage backends to establish connections
         kv_storage.initialize().await?;
         vector_storage.initialize().await?;
-        // WHY: Apache AGE (graph extension) may not be available in all PostgreSQL deployments
-        // (e.g., pgvector-only images used in CI). Graph storage failure is non-fatal;
-        // graph-dependent features (entity extraction, Cypher queries) will degrade gracefully
+        // WHY: The graph backend may not be reachable in all PostgreSQL deployments
+        // (e.g. Apache AGE not installed on pgvector-only images used in CI). Graph
+        // storage failure is non-fatal; graph-dependent features degrade gracefully
         // by returning errors, while the server continues to serve all other endpoints.
         if let Err(e) = graph_storage.initialize().await {
             tracing::warn!(
-                "⚠ Graph storage (Apache AGE) not available: {} \
-                - graph features will be degraded. \
-                Install Apache AGE extension for full functionality.",
+                backend = %graph_backend,
+                "⚠ Graph storage ({}) not available: {} \
+                - graph features will be degraded.",
+                graph_backend,
                 e
             );
         } else {
-            edgequake_storage::spawn_community_backfill_if_needed(
-                Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>
-            );
+            edgequake_storage::spawn_community_backfill_if_needed(Arc::clone(&graph_storage));
         }
 
         tracing::info!("PostgreSQL storage backends initialized successfully");
@@ -330,7 +363,7 @@ impl AppState {
 
         let engine_impl = super::query_bootstrap::build_production_query_engine(
             Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
-            Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
+            Arc::clone(&graph_storage),
             Arc::clone(&embedding_provider),
             Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
             Arc::clone(&kv_storage) as Arc<dyn edgequake_storage::traits::KVStorage>,
@@ -357,8 +390,7 @@ impl AppState {
             vector_storage: Arc::clone(&vector_storage)
                 as Arc<dyn edgequake_storage::traits::VectorStorage>,
             vector_registry,
-            graph_storage: Arc::clone(&graph_storage)
-                as Arc<dyn edgequake_storage::traits::GraphStorage>,
+            graph_storage: Arc::clone(&graph_storage),
             auth_memory: Arc::new(crate::services::auth_memory_store::AuthMemoryStore::new()),
             pdf_storage: Some(pdf_storage),
             mode: StorageMode::PostgreSQL,

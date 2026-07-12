@@ -95,7 +95,9 @@ services:
       retries: 3
       start_period: 20s
 
-  # ── PostgreSQL with pgvector + Apache AGE (SPEC-042 triple-track) ───────────
+  # ── PostgreSQL with pgvector (SPEC-042 triple-track) ───────────────────────
+  # Graph storage uses PostgresRelationalGraphStorage (no Apache AGE required);
+  # the fork publishes AGE-free edgequake-postgres images under this same ref.
   # Default: PG18 via edgequake-postgres:latest (or EDGEQUAKE_VERSION).
   # Legacy:  EDGEQUAKE_POSTGRES_TAG=latest-pg16 or EDGEQUAKE_VERSION-pg16
   postgres:

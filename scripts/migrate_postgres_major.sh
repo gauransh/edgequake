@@ -64,6 +64,10 @@ esac
 # shellcheck source=/dev/null
 source "$PINS"
 
+# Apache AGE is only required when opting into the AGE graph backend.
+# Default graph storage is PostgresRelationalGraphStorage (plain SQL, no AGE).
+GRAPH_BACKEND="${EDGEQUAKE_GRAPH_BACKEND:-relational}"
+
 log() { echo "== migrate_postgres_major: $*"; }
 
 # Host pg_dump/psql may be older than server (e.g. Homebrew 14 vs PG16).
@@ -173,7 +177,11 @@ preflight() {
     "SELECT coalesce(max(version), 0) AS latest_sqlx FROM _sqlx_migrations;" 2>/dev/null || \
     echo "  (no _sqlx_migrations yet)"
 
-  log "preflight target (PG${TARGET_MAJOR} — expected AGE >= ${EQ_AGE_MIN})"
+  if [ "$GRAPH_BACKEND" = "age" ]; then
+    log "preflight target (PG${TARGET_MAJOR} — expected AGE >= ${EQ_AGE_MIN})"
+  else
+    log "preflight target (PG${TARGET_MAJOR} — relational graph backend, AGE not required)"
+  fi
   run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "SELECT version();"
 }
 
@@ -183,8 +191,10 @@ prepare_target_extensions() {
   run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
   run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS btree_gin;"
   run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
-  run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS age;"
-  run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "LOAD 'age';"
+  if [ "$GRAPH_BACKEND" = "age" ]; then
+    run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS age;"
+    run_psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "LOAD 'age';"
+  fi
 }
 
 dump_source() {
@@ -206,13 +216,25 @@ align_extensions() {
 
 postflight() {
   log "postflight extension versions"
-  local tmp
+  local tmp age_check ext_filter
   tmp=$(mktemp)
+  # Apache AGE is only enforced when the AGE graph backend is selected.
+  if [ "$GRAPH_BACKEND" = "age" ]; then
+    ext_filter="'vector', 'age'"
+    age_check="  SELECT extversion INTO v_age FROM pg_extension WHERE extname = 'age';
+  IF v_age IS NULL OR string_to_array(v_age, '.')::int[] < string_to_array('${EQ_AGE_MIN}', '.')::int[] THEN
+    RAISE EXCEPTION 'Apache AGE must be >= ${EQ_AGE_MIN} (got %)', v_age;
+  END IF;
+  RAISE NOTICE 'postflight OK — vector=%, age=%', v_vector, v_age;"
+  else
+    ext_filter="'vector'"
+    age_check="  RAISE NOTICE 'postflight OK — vector=% (relational graph backend, AGE not required)', v_vector;"
+  fi
   cat >"$tmp" <<SQL
 SELECT extname, extversion,
        (SELECT default_version FROM pg_available_extensions e2 WHERE e2.name = e.extname) AS shipped
 FROM pg_extension e
-WHERE extname IN ('vector', 'age')
+WHERE extname IN (${ext_filter})
 ORDER BY 1;
 
 DO \$\$
@@ -221,14 +243,10 @@ DECLARE
   v_age text;
 BEGIN
   SELECT extversion INTO v_vector FROM pg_extension WHERE extname = 'vector';
-  SELECT extversion INTO v_age FROM pg_extension WHERE extname = 'age';
   IF v_vector IS NULL OR string_to_array(v_vector, '.')::int[] < string_to_array('${EQ_PGVECTOR_MIN}', '.')::int[] THEN
     RAISE EXCEPTION 'pgvector must be >= ${EQ_PGVECTOR_MIN} (got %)', v_vector;
   END IF;
-  IF v_age IS NULL OR string_to_array(v_age, '.')::int[] < string_to_array('${EQ_AGE_MIN}', '.')::int[] THEN
-    RAISE EXCEPTION 'Apache AGE must be >= ${EQ_AGE_MIN} (got %)', v_age;
-  END IF;
-  RAISE NOTICE 'postflight OK — vector=%, age=%', v_vector, v_age;
+${age_check}
 END \$\$;
 SQL
   run_psql_file "$TARGET_URL" "$tmp"

@@ -14,17 +14,9 @@ CREATE EXTENSION IF NOT EXISTS btree_gin;    -- GIN support for btree operators
 -- Vector similarity search (pgvector)
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Apache AGE for graph database (optional — degrades gracefully)
-DO $$
-BEGIN
-    CREATE EXTENSION IF NOT EXISTS age CASCADE;
-    LOAD 'age';
-    SET search_path = ag_catalog, "$user", public;
-    RAISE NOTICE 'Apache AGE extension enabled (extversion=%)',
-        (SELECT extversion FROM pg_extension WHERE extname = 'age');
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Apache AGE extension not available: %. Graph features will use fallback storage.', SQLERRM;
-END $$;
+-- NOTE: Graph storage uses PostgresRelationalGraphStorage (plain SQL tables via
+-- SQLx migrations). Apache AGE is no longer required or created here. Set
+-- EDGEQUAKE_GRAPH_BACKEND=age only with an AGE-enabled image if you opt in.
 
 -- Log installed extension versions for operator diagnostics
 DO $$
@@ -35,7 +27,7 @@ BEGIN
     FOR rec IN
         SELECT extname, extversion
         FROM pg_extension
-        WHERE extname IN ('vector', 'age', 'pg_trgm', 'btree_gin', 'uuid-ossp')
+        WHERE extname IN ('vector', 'pg_trgm', 'btree_gin', 'uuid-ossp')
         ORDER BY extname
     LOOP
         RAISE NOTICE '  % = %', rec.extname, rec.extversion;

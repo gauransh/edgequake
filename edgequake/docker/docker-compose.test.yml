@@ -5,8 +5,9 @@
 # This docker-compose file sets up the test environment for PostgreSQL
 # integration tests. It includes:
 #   - Standard PostgreSQL with pgvector extension
-#   - Apache AGE PostgreSQL for graph database tests
 #   - Proper user setup for RLS testing
+#
+# Graph storage uses PostgresRelationalGraphStorage (no Apache AGE required).
 #
 # Usage:
 #   docker-compose -f docker-compose.test.yml up -d
@@ -18,7 +19,7 @@
 # ============================================================================
 
 services:
-  # PostgreSQL with pgvector + Apache AGE (mirrors production Dockerfile.postgres)
+  # PostgreSQL with pgvector (mirrors production Dockerfile.postgres)
   postgres-test:
     build:
       context: .
@@ -52,36 +53,8 @@ services:
       - "-c"
       - "log_statement=all"
 
-  # Legacy AGE-only container — deprecated; unified postgres-test now includes AGE.
-  # Kept for backward compatibility with scripts that target port 5434.
-  postgres-age-test:
-    profiles: ["legacy-age"]
-    build:
-      context: .
-      dockerfile: Dockerfile.postgres
-    container_name: edgequake-postgres-age-test
-    environment:
-      POSTGRES_DB: edgequake_test_age
-      POSTGRES_USER: edgequake_test
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test_password_123}
-    ports:
-      - "5434:5432"
-    volumes:
-      - postgres_age_test_data:/var/lib/postgresql/data
-      - ../migrations:/docker-entrypoint-initdb.d/migrations:ro
-      - ./init-age-db.sh:/docker-entrypoint-initdb.d/00-init-age-db.sh:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U edgequake_test -d edgequake_test_age"]
-      interval: 5s
-      timeout: 5s
-      retries: 15
-      start_period: 60s
-    networks:
-      - edgequake-test
-
 volumes:
   postgres_test_data:
-  postgres_age_test_data:
 
 networks:
   edgequake-test:

@@ -13,7 +13,9 @@
 //! Test container (`docker-compose.test.yml`) uses Dockerfile.postgres with
 //! pgvector + Apache AGE on port 5433 — run via `make test-postgres-storage`.
 
-#![cfg(feature = "postgres")]
+// AGE-backed integration suite: gated on `age-graph` because it constructs
+// PostgresAGEGraphStorage (only compiled with the AGE backend).
+#![cfg(feature = "age-graph")]
 
 use std::collections::HashMap;
 use std::env;

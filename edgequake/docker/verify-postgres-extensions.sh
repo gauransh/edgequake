@@ -62,6 +62,28 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS btree_gin;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+SELECT extname, extversion
+FROM pg_extension
+WHERE extname IN ('vector', 'pg_trgm', 'btree_gin', 'uuid-ossp')
+ORDER BY extname;
+
+DO \$\$
+DECLARE
+  v_vector text;
+BEGIN
+  SELECT extversion INTO v_vector FROM pg_extension WHERE extname = 'vector';
+
+  IF v_vector IS NULL OR string_to_array(v_vector, '.')::int[] < string_to_array('${EQ_PGVECTOR_MIN}', '.')::int[] THEN
+    RAISE EXCEPTION 'pgvector must be >= ${EQ_PGVECTOR_MIN} (got %)', v_vector;
+  END IF;
+END \$\$;
+SQL
+
+# Apache AGE is only required when the operator opts into the AGE graph backend.
+# Default deployments use PostgresRelationalGraphStorage (plain SQL, no AGE).
+if [ "${EDGEQUAKE_GRAPH_BACKEND:-relational}" = "age" ]; then
+  echo "EDGEQUAKE_GRAPH_BACKEND=age — verifying Apache AGE extension"
+  docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" psql -U edgequake -d edgequake -v ON_ERROR_STOP=1 <<SQL
 DO \$\$
 BEGIN
   CREATE EXTENSION IF NOT EXISTS age;
@@ -69,26 +91,16 @@ EXCEPTION WHEN OTHERS THEN
   RAISE EXCEPTION 'Apache AGE failed to load: %', SQLERRM;
 END \$\$;
 
-SELECT extname, extversion
-FROM pg_extension
-WHERE extname IN ('vector', 'age', 'pg_trgm', 'btree_gin', 'uuid-ossp')
-ORDER BY extname;
-
 DO \$\$
 DECLARE
-  v_vector text;
   v_age text;
 BEGIN
-  SELECT extversion INTO v_vector FROM pg_extension WHERE extname = 'vector';
   SELECT extversion INTO v_age FROM pg_extension WHERE extname = 'age';
-
-  IF v_vector IS NULL OR string_to_array(v_vector, '.')::int[] < string_to_array('${EQ_PGVECTOR_MIN}', '.')::int[] THEN
-    RAISE EXCEPTION 'pgvector must be >= ${EQ_PGVECTOR_MIN} (got %)', v_vector;
-  END IF;
   IF v_age IS NULL OR string_to_array(v_age, '.')::int[] < string_to_array('${EQ_AGE_MIN}', '.')::int[] THEN
     RAISE EXCEPTION 'Apache AGE must be >= ${EQ_AGE_MIN} (got %)', v_age;
   END IF;
 END \$\$;
 SQL
+fi
 
 echo "✓ All EdgeQuake PostgreSQL extensions verified on $IMAGE"

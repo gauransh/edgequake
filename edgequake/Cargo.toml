@@ -46,6 +46,9 @@ path = "examples/multi_tenant.rs"
 default = ["postgres", "vision"]
 otel = ["edgequake-observability/otel", "edgequake-api/otel"]
 postgres = ["edgequake-api/postgres", "edgequake-storage/postgres"]
+# Opt-in Apache AGE graph backend (not in default). Enable to compile the AGE
+# storage adapter + reconcile hooks and allow EDGEQUAKE_GRAPH_BACKEND=age.
+age-graph = ["postgres", "edgequake-api/age-graph", "edgequake-storage/age-graph"]
 vision = ["edgequake-api/vision"]
 
 [dependencies]

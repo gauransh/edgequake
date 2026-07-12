@@ -11,8 +11,11 @@ repository.workspace = true
 [features]
 default = []
 postgres = ["dep:sqlx"]
+# Apache AGE graph backend (Cypher, ag_catalog). Opt-in only — the default
+# postgres build ships the plain-relational graph adapter instead.
+age-graph = ["postgres"]
 # Enable all storage backends
-full = ["postgres"]
+full = ["postgres", "age-graph"]
 
 [dependencies]
 async-trait = { workspace = true }

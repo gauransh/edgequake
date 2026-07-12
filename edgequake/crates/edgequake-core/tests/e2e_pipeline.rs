@@ -19,7 +19,7 @@ use edgequake_storage::{
     GraphStorage, GraphStorageReadOps, MemoryGraphStorage, MemoryVectorStorage,
 };
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 use edgequake_storage::{KVStorage, VectorStorage};
 
 /// Create LLM provider from environment or use smart mock.
@@ -522,7 +522,7 @@ fn create_test_extraction(
 }
 
 /// Test PostgreSQL-based full E2E pipeline.
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 #[tokio::test]
 async fn test_postgres_e2e_document_to_knowledge_graph() {
     use edgequake_storage::{

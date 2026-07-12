@@ -29,6 +29,8 @@ mod graph_e2e_contract;
 #[path = "support/vector_e2e_contract.rs"]
 mod vector_e2e_contract;
 
+// Only exercised by the age-graph-gated postgres batch test in this binary.
+#[cfg_attr(not(feature = "age-graph"), allow(dead_code))]
 #[path = "support/graph_batch_contract.rs"]
 mod graph_batch_contract;
 
@@ -756,14 +758,12 @@ mod memory_graph_tests {
 
 #[cfg(feature = "postgres")]
 mod postgres_tests {
-    use super::{
-        graph_batch_contract, graph_e2e_contract, kv_e2e_contract, postgres_test_config,
-        vector_e2e_contract,
-    };
-    use edgequake_storage::{
-        GraphStorage, GraphStorageMutateOps, KVStorage, PgVectorStorage, PostgresAGEGraphStorage,
-        PostgresKVStorage, VectorStorage,
-    };
+    use super::{kv_e2e_contract, postgres_test_config, vector_e2e_contract};
+    #[cfg(feature = "age-graph")]
+    use super::{graph_batch_contract, graph_e2e_contract};
+    use edgequake_storage::{KVStorage, PgVectorStorage, PostgresKVStorage, VectorStorage};
+    #[cfg(feature = "age-graph")]
+    use edgequake_storage::{GraphStorage, GraphStorageMutateOps, PostgresAGEGraphStorage};
 
     macro_rules! require_postgres {
         () => {
@@ -797,6 +797,7 @@ mod postgres_tests {
         storage.clear().await.expect("Failed to clear");
     }
 
+    #[cfg(feature = "age-graph")]
     #[tokio::test]
     async fn test_postgres_graph_full_coverage() {
         let config = require_postgres!();

@@ -22,11 +22,11 @@ async fn memory_backend_graph_batch_upsert_contract() {
     graph_batch_contract::assert_graph_batch_upsert(&storage).await;
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 #[path = "support/postgres_test_config.rs"]
 mod postgres_test_config;
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 mod postgres_contract {
     use super::{graph_batch_contract, graph_workspace_contract, postgres_test_config};
     use edgequake_storage::{GraphStorage, PostgresAGEGraphStorage, PostgresConfig};

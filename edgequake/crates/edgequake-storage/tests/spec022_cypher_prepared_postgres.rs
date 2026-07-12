@@ -1,10 +1,10 @@
 //! SPEC-022 P-H7 — parameterized AGE Cypher on hot-path node/edge CRUD.
 
 #[path = "support/postgres_test_config.rs"]
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 mod postgres_test_config;
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 mod postgres_integration {
     use super::postgres_test_config;
     use std::collections::HashMap;

@@ -120,6 +120,10 @@ impl PostgresPool {
     }
 
     /// Set up required PostgreSQL extensions.
+    ///
+    /// Only pgvector is unconditional. Apache AGE is set up separately via
+    /// [`PostgresPool::ensure_age_extension`] and only when the AGE graph
+    /// backend is selected (feature `age-graph`).
     async fn setup_extensions(&self, pool: &PgPool) -> Result<()> {
         // Enable pgvector extension
         sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
@@ -132,40 +136,17 @@ impl PostgresPool {
                 ))
             })?;
 
-        // Enable Apache AGE extension
-        match sqlx::query("CREATE EXTENSION IF NOT EXISTS age CASCADE")
-            .execute(pool)
-            .await
-        {
-            Ok(_) => {
-                // Verify AGE catalog is reachable, then reset search_path on this connection
-                // so it is not returned to the pool with ag_catalog-first resolution.
-                let mut conn = pool.acquire().await.map_err(|e| {
-                    StorageError::Database(format!("Failed to acquire connection for AGE: {}", e))
-                })?;
-                sqlx::query("SET search_path = ag_catalog, \"$user\", public")
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|e| {
-                        StorageError::Database(format!("Failed to set AGE search_path: {}", e))
-                    })?;
-                sqlx::query("SET search_path TO public")
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|e| {
-                        StorageError::Database(format!("Failed to reset search_path: {}", e))
-                    })?;
-            }
-            Err(e) => {
-                // AGE is optional - log warning but continue
-                tracing::warn!(
-                    "Apache AGE extension not available: {}. Graph operations will use fallback.",
-                    e
-                );
-            }
-        }
-
         Ok(())
+    }
+
+    /// Ensure the Apache AGE extension is installed on this pool.
+    ///
+    /// Invoked only when the AGE graph backend is active — the default
+    /// relational backend never loads AGE.
+    #[cfg(feature = "age-graph")]
+    pub(crate) async fn ensure_age_extension(&self) -> Result<()> {
+        let pool = self.get().await?;
+        setup_age_extension(&pool).await
     }
 
     /// Execute a raw query (for testing).
@@ -190,6 +171,47 @@ impl PostgresPool {
         let health: i32 = row.get("health");
         Ok(health == 1)
     }
+}
+
+/// Create the Apache AGE extension (best-effort) and normalise `search_path`.
+///
+/// AGE is optional at runtime: if the binary is unavailable the pool still comes
+/// up and graph operations degrade rather than aborting startup.
+#[cfg(feature = "age-graph")]
+async fn setup_age_extension(pool: &PgPool) -> Result<()> {
+    match sqlx::query("CREATE EXTENSION IF NOT EXISTS age CASCADE")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => {
+            // Verify AGE catalog is reachable, then reset search_path on this connection
+            // so it is not returned to the pool with ag_catalog-first resolution.
+            let mut conn = pool.acquire().await.map_err(|e| {
+                StorageError::Database(format!("Failed to acquire connection for AGE: {}", e))
+            })?;
+            sqlx::query("SET search_path = ag_catalog, \"$user\", public")
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    StorageError::Database(format!("Failed to set AGE search_path: {}", e))
+                })?;
+            sqlx::query("SET search_path TO public")
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    StorageError::Database(format!("Failed to reset search_path: {}", e))
+                })?;
+        }
+        Err(e) => {
+            // AGE is optional - log warning but continue
+            tracing::warn!(
+                "Apache AGE extension not available: {}. Graph operations will use fallback.",
+                e
+            );
+        }
+    }
+
+    Ok(())
 }
 
 impl std::fmt::Debug for PostgresPool {

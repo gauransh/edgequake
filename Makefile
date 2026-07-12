@@ -1317,8 +1317,6 @@ postgres-image-build-unified: ## Build any PG profile via unified Dockerfile (DR
 	cd $(DOCKER_DIR) && docker build \
 		--build-arg PG_MAJOR="$$EQ_POSTGRES_MAJOR" \
 		--build-arg PGVECTOR_VERSION="$$EQ_PGVECTOR_VERSION" \
-		--build-arg AGE_GIT_REF="$$EQ_AGE_GIT_REF" \
-		--build-arg AGE_EXPECTED_VERSION="$$EQ_AGE_MIN" \
 		-f Dockerfile.postgres.unified \
 		-t "edgequake-postgres:$$EQ_POSTGRES_GHCR_SUFFIX" .; \
 	chmod +x $(DOCKER_DIR)/verify-postgres-extensions.sh; \
@@ -2032,10 +2030,15 @@ test-postgres-start: ## Start PostgreSQL test containers
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 20 25 30; do \
 		(docker exec edgequake-postgres-test pg_isready -U edgequake_test -d edgequake_test 2>/dev/null) && break || sleep 2; \
 	done
-	@echo "$(YELLOW)Verifying pgvector + AGE extensions...$(RESET)"
-	@docker exec edgequake-postgres-test psql -U edgequake_test -d edgequake_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS age;" >/dev/null 2>&1 \
-		|| (echo "$(RED)✗ Failed to enable vector/age extensions$(RESET)" && exit 1)
-	@echo "$(GREEN)✓ PostgreSQL test containers ready (pgvector + AGE)$(RESET)"
+	@echo "$(YELLOW)Verifying pgvector extension...$(RESET)"
+	@docker exec edgequake-postgres-test psql -U edgequake_test -d edgequake_test -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 \
+		|| (echo "$(RED)✗ Failed to enable vector extension$(RESET)" && exit 1)
+	@# Apache AGE is only required for the AGE graph backend (opt-in).
+	@if [ "$${EDGEQUAKE_GRAPH_BACKEND:-relational}" = "age" ]; then \
+		docker exec edgequake-postgres-test psql -U edgequake_test -d edgequake_test -c "CREATE EXTENSION IF NOT EXISTS age;" >/dev/null 2>&1 \
+			|| (echo "$(RED)✗ Failed to enable age extension (EDGEQUAKE_GRAPH_BACKEND=age)$(RESET)" && exit 1); \
+	fi
+	@echo "$(GREEN)✓ PostgreSQL test containers ready (pgvector)$(RESET)"
 
 test-postgres-stop: ## Stop PostgreSQL test containers
 	@echo "$(BLUE)Stopping PostgreSQL test containers...$(RESET)"

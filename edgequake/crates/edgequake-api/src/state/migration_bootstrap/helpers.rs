@@ -21,6 +21,7 @@ pub fn large_graph_threshold() -> i64 {
         .unwrap_or(500_000)
 }
 
+#[cfg(feature = "age-graph")]
 pub(super) async fn set_large_graph_threshold(
     pool: &PgPool,
     threshold: i64,
@@ -32,6 +33,7 @@ pub(super) async fn set_large_graph_threshold(
     Ok(())
 }
 
+#[cfg(feature = "age-graph")]
 pub(super) fn quote_schema(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }

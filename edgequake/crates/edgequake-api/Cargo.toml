@@ -11,6 +11,8 @@ description = "REST API server for EdgeQuake"
 default = []
 otel = ["edgequake-observability/otel"]
 postgres = ["edgequake-storage/postgres", "edgequake-core/postgres", "dep:sqlx"]
+# Apache AGE graph backend — gates the AGE reconcile hooks and backend selection.
+age-graph = ["postgres", "edgequake-storage/age-graph"]
 # SPEC-021 P-E3: enables the EdgeQuake orchestrator for contract tests.
 # Forwarded to edgequake-core so `#[cfg(feature = "pipeline")]` test gates work.
 pipeline = ["edgequake-core/pipeline"]

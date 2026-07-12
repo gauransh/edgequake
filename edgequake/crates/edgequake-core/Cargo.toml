@@ -12,6 +12,8 @@ repository.workspace = true
 default = []
 pipeline = ["dep:edgequake-pipeline"]
 postgres = ["edgequake-storage/postgres", "dep:sqlx"]
+# Apache AGE graph backend — opt-in; forwarded to storage for AGE-only tests.
+age-graph = ["postgres", "edgequake-storage/age-graph"]
 
 [dependencies]
 serde = { workspace = true }

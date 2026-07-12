@@ -11,6 +11,7 @@ pub(super) async fn execute_bootstrap_apply_sql(
     Ok(())
 }
 
+mod m001;
 mod m038;
 mod m040;
 mod m041;
@@ -43,6 +44,7 @@ mod m078;
 mod m080;
 mod m081;
 
+pub(super) use m001::repair_migration_001_checksum_if_needed;
 pub(super) use m038::reconcile_migration_038;
 pub(super) use m040::reconcile_migration_040_background;
 pub(super) use m041::reconcile_migration_041;

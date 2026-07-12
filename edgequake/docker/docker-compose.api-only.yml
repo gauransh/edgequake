@@ -1,10 +1,11 @@
 # EdgeQuake — API only (bring your own PostgreSQL)
 #
 # Use this file when you have an existing PostgreSQL instance with the
-# pgvector and apache_age extensions already installed.
+# pgvector extension already installed. Graph storage uses
+# PostgresRelationalGraphStorage, so Apache AGE is not required.
 #
 # Prerequisites:
-#   - PostgreSQL with pgvector + apache_age extensions
+#   - PostgreSQL with pgvector extension
 #   - A .env file (copy .env.example) with at minimum DATABASE_URL set
 #
 # Quick start:

@@ -35,11 +35,13 @@ mod capabilities;
 mod config;
 mod connection;
 mod conversation;
+#[cfg(feature = "age-graph")]
 mod graph;
 mod id_allocation;
 mod kv;
 mod pdf_list_query;
 mod pdf_storage_impl;
+mod relational_graph;
 pub mod rls;
 mod row_count_stats;
 mod schema;
@@ -55,10 +57,12 @@ pub use capabilities::{
 pub use config::PostgresConfig;
 pub use connection::PostgresPool;
 pub use conversation::PostgresConversationStorage;
+#[cfg(feature = "age-graph")]
 pub use graph::PostgresAGEGraphStorage;
 pub use id_allocation::{allocate_document_id, is_uuidv7};
 pub use kv::PostgresKVStorage;
 pub use pdf_storage_impl::PostgresPdfStorage;
+pub use relational_graph::PostgresRelationalGraphStorage;
 #[allow(deprecated)]
 pub use rls::{
     acquire_rls_connection, clear_tenant_context, clear_tenant_context_on_conn,

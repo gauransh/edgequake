@@ -1,11 +1,35 @@
 use sqlx::PgPool;
 
+use super::super::Migration038Report;
+
+#[cfg(feature = "age-graph")]
 use super::execute_bootstrap_apply_sql;
+#[cfg(feature = "age-graph")]
+use super::super::helpers::{large_graph_threshold, quote_schema, set_large_graph_threshold};
+#[cfg(feature = "age-graph")]
+use super::super::{MIGRATION_038_VERSION, SQL_038_APPLY};
+#[cfg(feature = "age-graph")]
 use tracing::info;
 
-use super::super::helpers::{large_graph_threshold, quote_schema, set_large_graph_threshold};
-use super::super::{Migration038Report, MIGRATION_038_VERSION, SQL_038_APPLY};
+/// Non-AGE build: the source_ids indexes live on AGE vertex/edge tables that do
+/// not exist, so this is a no-op that reports a healthy (non-degraded) state.
+#[cfg(not(feature = "age-graph"))]
+pub async fn reconcile_migration_038(
+    _pool: &PgPool,
+    _applied_this_run: &[i64],
+) -> Result<Migration038Report, sqlx::Error> {
+    Ok(Migration038Report {
+        age_available: false,
+        graphs_checked: 0,
+        indexes_ready: true,
+        indexes_repaired_inline: false,
+        deferred_large_graphs: Vec::new(),
+        missing_indexes: Vec::new(),
+        operator_action: None,
+    })
+}
 
+#[cfg(feature = "age-graph")]
 pub async fn reconcile_migration_038(
     pool: &PgPool,
     applied_this_run: &[i64],
@@ -100,12 +124,14 @@ pub async fn reconcile_migration_038(
     })
 }
 
+#[cfg(feature = "age-graph")]
 struct GraphIndexAudit {
     graph_name: String,
     vertex_count: Option<i64>,
     missing_indexes: Vec<String>,
 }
 
+#[cfg(feature = "age-graph")]
 async fn audit_graph_indexes(pool: &PgPool) -> Result<Vec<GraphIndexAudit>, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct GraphRow {

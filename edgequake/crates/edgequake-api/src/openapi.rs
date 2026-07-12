@@ -36,6 +36,7 @@ use crate::handlers;
         handlers::mcp::mcp_registry_server_json,
         handlers::mcp_oauth_protected_resource,
         handlers::get_graph,
+        handlers::export_graph,
         handlers::stream_graph,
         handlers::get_node,
         handlers::search_labels,

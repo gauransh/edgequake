@@ -6,8 +6,11 @@ use edgequake_storage::traits::{
     GraphStorageMutator, GraphStorageReadOps, GraphStorageReader,
 };
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 use edgequake_storage::PostgresAGEGraphStorage;
+
+#[cfg(feature = "postgres")]
+use edgequake_storage::PostgresRelationalGraphStorage;
 
 fn assert_graph_storage_isp<T>()
 where
@@ -32,10 +35,16 @@ fn memory_graph_storage_satisfies_isp_contract() {
     assert_graph_storage_isp::<MemoryGraphStorage>();
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "age-graph")]
 #[test]
 fn postgres_graph_storage_satisfies_isp_contract() {
     assert_graph_storage_isp::<PostgresAGEGraphStorage>();
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_relational_graph_storage_satisfies_isp_contract() {
+    assert_graph_storage_isp::<PostgresRelationalGraphStorage>();
 }
 
 #[tokio::test]
