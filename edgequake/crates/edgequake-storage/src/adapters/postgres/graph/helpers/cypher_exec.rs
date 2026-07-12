@@ -2,12 +2,17 @@
 //!
 //! ## AGE parameter binding
 //!
-//! AGE's `cypher()` function requires the third (parameter-map) argument to be
-//! a bare `$1` inside a `PREPARE`d statement — any cast expression (e.g.
-//! `$1::agtype`) is rejected.  We therefore inline the agtype literal as
-//! `'<escaped-json>'::agtype` directly in the SQL.  Because the JSON is
-//! produced by `serde_json` (no user-controlled SQL fragments) and single
-//! quotes are escaped, this is safe against injection.
+//! AGE's `cypher()` function only accepts a bare `$N` prepared-statement
+//! placeholder as its third (parameter-map) argument. Any expression there —
+//! including an inline `'<json>'::agtype` cast — is rejected at parse time with
+//! "third argument of cypher function must be a parameter" (itsm-graph-core#11,
+//! #12). Rather than route a typed agtype bind through sqlx, the bound helpers
+//! reuse the same proven pattern as the ingestion write path: `$param`
+//! placeholders are materialized directly into the Cypher text by
+//! `inline_cypher_params`, so `cypher()` is always issued in its supported
+//! two-argument form. Every value flows through `value_to_cypher`, which
+//! single-quote-escapes strings, keeping the inlined ids/properties
+//! injection-safe.
 
 use sqlx::Row;
 
@@ -16,77 +21,34 @@ use crate::error::{Result, StorageError};
 use super::super::PostgresAGEGraphStorage;
 
 impl PostgresAGEGraphStorage {
-    /// Escape a JSON string for use as an agtype literal in SQL.
-    fn escape_agtype_literal(json: &str) -> String {
-        json.replace('\'', "''")
-    }
-
-    /// Run read Cypher with agtype parameters (injection-safe via serde_json).
+    /// Run read Cypher with parameters inlined as safe agtype literals.
+    ///
+    /// `$param` placeholders are substituted directly into the Cypher text by
+    /// [`Self::inline_cypher_params`] so `cypher()` is issued in its supported
+    /// two-argument form — AGE rejects any non-`$N` third argument. Values are
+    /// single-quote-escaped by `value_to_cypher`, identical to the ingestion
+    /// write path, so this stays injection-safe.
     pub(in crate::adapters::postgres::graph) async fn cypher_query_bound(
         &self,
         cypher: &str,
         columns: &[&str],
         params: &serde_json::Value,
     ) -> Result<Vec<sqlx::postgres::PgRow>> {
-        let pool = self.pool.get().await?;
-        let mut conn = pool.acquire().await.map_err(|e| {
-            StorageError::Connection(format!("Failed to acquire connection: {}", e))
-        })?;
-
-        Self::setup_age_session_scoped(&mut conn, None).await?;
-
-        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
-        let params_lit = Self::escape_agtype_literal(&params_json);
-
-        let tag = Self::dollar_quote_tag(cypher);
-        let as_clause = columns
-            .iter()
-            .map(|c| format!("{c} agtype"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let select_clause = columns
-            .iter()
-            .map(|c| format!("agtype_to_json({c}) as {c}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let sql = format!(
-            "SELECT {select_clause} FROM cypher('{graph}', {tag} {cypher} {tag}, \
-             '{params_lit}'::agtype) AS ({as_clause})",
-            graph = self.graph_name,
-        );
-
-        let rows = sqlx::query(&sql).fetch_all(&mut *conn).await.map_err(|e| {
-            StorageError::Database(format!("Parameterized Cypher query failed: {e}"))
-        })?;
-
-        Ok(rows)
+        let inlined = Self::inline_cypher_params(cypher, params);
+        self.cypher_query(&inlined, columns).await
     }
 
-    /// Run write Cypher with agtype parameters.
+    /// Run write Cypher with parameters inlined as safe agtype literals.
+    ///
+    /// See [`Self::cypher_query_bound`] for why parameters are inlined rather
+    /// than passed as a `cypher()` third argument.
     pub(in crate::adapters::postgres::graph) async fn cypher_execute_bound(
         &self,
         cypher: &str,
         params: &serde_json::Value,
     ) -> Result<()> {
-        let pool = self.pool.get().await?;
-
-        let params_json = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
-        let params_lit = Self::escape_agtype_literal(&params_json);
-
-        let tag = Self::dollar_quote_tag(cypher);
-        let sql = format!(
-            "{setup} SELECT * FROM cypher('{graph}', {tag} {cypher} {tag}, \
-             '{params_lit}'::agtype) AS (a agtype);",
-            setup = Self::age_session_setup_sql(),
-            graph = self.graph_name,
-        );
-
-        sqlx::raw_sql(&sql).execute(&pool).await.map_err(|e| {
-            StorageError::Database(format!("Parameterized Cypher execute failed: {e}"))
-        })?;
-
-        Ok(())
+        let inlined = Self::inline_cypher_params(cypher, params);
+        self.cypher_execute(&inlined).await
     }
 
     // ── non-parameterized helpers (unchanged) ───────────────────────────────

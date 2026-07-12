@@ -81,6 +81,26 @@ fn spec022_cypher_exec_exposes_bound_helpers() {
     let src = include_str!("../src/adapters/postgres/graph/helpers/cypher_exec.rs");
     assert!(src.contains("cypher_query_bound"));
     assert!(src.contains("cypher_execute_bound"));
-    assert!(src.contains("escape_agtype_literal"));
-    assert!(src.contains("::agtype"));
+}
+
+/// itsm-graph-core#11/#12: AGE rejects any non-`$N` third argument to
+/// `cypher()` ("third argument of cypher function must be a parameter"), so the
+/// bound helpers must inline params into the Cypher text via
+/// `inline_cypher_params` rather than pass an inline `::agtype` literal.
+#[test]
+fn spec022_cypher_exec_inlines_params_not_third_arg() {
+    let src = include_str!("../src/adapters/postgres/graph/helpers/cypher_exec.rs");
+    assert!(
+        src.contains("inline_cypher_params"),
+        "bound helpers must delegate to inline_cypher_params"
+    );
+    assert!(
+        !src.contains("params_lit"),
+        "cypher() third argument must not inline an agtype literal (params_lit)"
+    );
+    let fmt = include_str!("../src/adapters/postgres/graph/helpers/cypher_format.rs");
+    assert!(
+        fmt.contains("fn inline_cypher_params"),
+        "inline_cypher_params must exist in cypher_format"
+    );
 }
