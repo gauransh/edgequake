@@ -104,6 +104,46 @@ pub async fn create_api_key(
     ))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::auth::RequestAuthContext;
+    use crate::state::AppState;
+    use axum::extract::FromRef;
+    use edgequake_auth::Role;
+
+    /// issue #17: a master-key principal (synthetic non-UUID user id) must be
+    /// able to mint a scoped key without a 500. In test/memory mode the key is
+    /// persisted via the KV path; the same handler flow drives the PG path,
+    /// which migration 060 + nullable-safe binding make succeed on staging.
+    #[tokio::test]
+    async fn master_principal_can_mint_scoped_key() {
+        let state = AppState::test_state();
+
+        let result = create_api_key(
+            State(AuthRuntime::from_ref(&state)),
+            State(StorageRuntime::from_ref(&state)),
+            State(PostgresRuntime::from_ref(&state)),
+            State(ApiSecurityConfig::from_ref(&state)),
+            ApiAuthenticated(RequestAuthContext {
+                user_id: "master-api-key".to_string(),
+                role: Role::Admin,
+            }),
+            Json(CreateApiKeyRequest {
+                name: Some("bench-20260712".to_string()),
+                scopes: None,
+                expires_in_days: Some(30),
+            }),
+        )
+        .await;
+
+        let (status, body) = result.expect("master principal must not 500");
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(body.0.api_key.starts_with("eq_"));
+        assert_eq!(body.0.scopes, vec!["read".to_string(), "write".to_string()]);
+    }
+}
+
 /// Generate a random API key.
 pub(super) fn generate_api_key() -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
