@@ -231,6 +231,43 @@ pub fn merge_document_summaries(
     kv_documents
 }
 
+/// True when a relational document status represents in-flight ingestion.
+///
+/// WHY: bulk/delete-all purges must NOT force-delete a document that is still
+/// being processed — only the KV-driven pass (which owns the stuck-detection
+/// heuristic) may decide to remove those. Any terminal or unknown status is a
+/// safe purge target for a relational-only row that KV never enumerated.
+pub fn is_active_processing_status(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("pending" | "processing" | "chunking" | "extracting" | "embedding" | "indexing")
+    )
+}
+
+/// Relational document ids that the KV-driven delete pass never touched.
+///
+/// WHY (issue #14/#15): `delete_all_documents` enumerates KV `*-metadata`
+/// entries only. Documents whose KV metadata drifted or was scoped to a legacy
+/// workspace survive as relational rows and reappear in the list via
+/// `merge_document_summaries` ("ghost rows"). Bulk deletion must purge those
+/// relational-only rows through the same complete path. Rows still actively
+/// processing are skipped so an in-flight ingestion is not force-deleted.
+///
+/// `handled_ids` is the set of document ids already visited by the KV pass
+/// (deleted or intentionally skipped); those are excluded here to avoid
+/// double-counting and to honor the KV pass's skip decisions.
+pub fn relational_ids_needing_purge(
+    handled_ids: &std::collections::HashSet<String>,
+    relational: &[DocumentSummary],
+) -> Vec<String> {
+    relational
+        .iter()
+        .filter(|d| !handled_ids.contains(&d.id))
+        .filter(|d| !is_active_processing_status(d.status.as_deref()))
+        .map(|d| d.id.clone())
+        .collect()
+}
+
 /// Resolve the per-document `entity_count` against the authoritative AGE
 /// graph when both the KV and relational feeds are missing/zero (SPEC-021 P-A3).
 ///
@@ -406,5 +443,91 @@ mod tests {
         assert_eq!(merged[0].id, "b");
         assert_eq!(merged[1].id, "a");
         assert_eq!(merged[1].title.as_deref(), Some("KV title"));
+    }
+
+    fn summary_with(id: &str, status: Option<&str>) -> DocumentSummary {
+        DocumentSummary {
+            id: id.into(),
+            title: None,
+            file_name: None,
+            content_summary: None,
+            content_length: None,
+            chunk_count: 0,
+            entity_count: None,
+            status: status.map(|s| s.to_string()),
+            error_message: None,
+            warning_message: None,
+            track_id: None,
+            created_at: None,
+            updated_at: None,
+            cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            llm_model: None,
+            embedding_model: None,
+            source_type: None,
+            current_stage: None,
+            stage_progress: None,
+            stage_message: None,
+            pdf_id: None,
+        }
+    }
+
+    #[test]
+    fn active_processing_statuses_are_recognized() {
+        for s in [
+            "pending",
+            "processing",
+            "chunking",
+            "extracting",
+            "embedding",
+            "indexing",
+        ] {
+            assert!(is_active_processing_status(Some(s)), "{s} should be active");
+        }
+        for s in [
+            "completed",
+            "indexed",
+            "failed",
+            "partial_failure",
+            "cancelled",
+        ] {
+            assert!(
+                !is_active_processing_status(Some(s)),
+                "{s} should be terminal"
+            );
+        }
+        assert!(!is_active_processing_status(None));
+        assert!(!is_active_processing_status(Some("weird")));
+    }
+
+    #[test]
+    fn relational_purge_excludes_kv_handled_and_active_rows() {
+        // "a" already handled by the KV pass; "b" is a relational-only ghost;
+        // "c" is relational-only but still processing (must be skipped).
+        let mut handled = std::collections::HashSet::new();
+        handled.insert("a".to_string());
+
+        let relational = vec![
+            summary_with("a", Some("completed")),
+            summary_with("b", Some("completed")),
+            summary_with("c", Some("processing")),
+            summary_with("d", Some("failed")),
+        ];
+
+        let purge = relational_ids_needing_purge(&handled, &relational);
+        assert_eq!(purge, vec!["b".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn relational_purge_empty_when_all_handled() {
+        let handled: std::collections::HashSet<String> =
+            ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let relational = vec![
+            summary_with("a", Some("completed")),
+            summary_with("b", Some("indexed")),
+        ];
+        assert!(relational_ids_needing_purge(&handled, &relational).is_empty());
     }
 }
