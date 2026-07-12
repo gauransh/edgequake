@@ -34,6 +34,12 @@ pub fn empty_documents_list() -> ListDocumentsResponse {
 }
 
 /// Empty track status when tenant context is incomplete.
+///
+/// itsm-graph-core#13: `is_complete` MUST be `false` here — a missing tenant
+/// context means we scanned zero documents, which is indistinguishable from
+/// "documents not registered yet". Reporting `true` (the old behavior) let a
+/// caller conclude a track finished when we simply could not see it, the same
+/// vacuous-truth bug fixed in `compute_track_completion`.
 pub fn empty_track_status(track_id: String) -> TrackStatusResponse {
     TrackStatusResponse {
         track_id,
@@ -49,8 +55,8 @@ pub fn empty_track_status(track_id: String) -> TrackStatusResponse {
             cancelled: 0,
             unknown: 0,
         },
-        is_complete: true,
-        latest_message: None,
+        is_complete: false,
+        latest_message: Some("No documents registered (tenant context missing)".to_string()),
     }
 }
 
@@ -104,4 +110,22 @@ pub fn warn_missing_tenant_context(ctx: &TenantContext, operation: &str) {
         operation,
         "Tenant context missing - returning empty response for security"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_track_status_is_not_complete() {
+        // itsm-graph-core#13: a track we cannot see (missing tenant context) is
+        // NOT complete — it must not report success like the old behavior did.
+        let status = empty_track_status("track-xyz".to_string());
+        assert!(!status.is_complete);
+        assert_eq!(status.total_count, 0);
+        assert_eq!(
+            status.latest_message.as_deref(),
+            Some("No documents registered (tenant context missing)")
+        );
+    }
 }
