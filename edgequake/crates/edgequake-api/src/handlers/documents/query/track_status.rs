@@ -197,29 +197,109 @@ pub async fn get_track_status(
     created_times.sort();
     let created_at = created_times.first().cloned();
 
-    // Check if complete (no pending or processing)
-    let is_complete = status_summary.pending == 0 && status_summary.processing == 0;
-
-    // Build latest message
-    let latest_message = if !is_complete {
-        Some(format!(
-            "Processing {}/{} documents...",
-            status_summary.completed + status_summary.failed,
-            track_docs.len()
-        ))
-    } else if status_summary.failed > 0 {
-        Some(format!("Completed with {} errors", status_summary.failed))
-    } else {
-        Some("All documents processed successfully".to_string())
-    };
+    // itsm-graph-core#13: derive completion from the summary. A track with zero
+    // registered documents is NOT complete (vacuous truth) — the doc row may not
+    // have landed yet after an async upload.
+    let total_count = track_docs.len();
+    let (is_complete, latest_message) = compute_track_completion(&status_summary, total_count);
 
     Ok(Json(TrackStatusResponse {
         track_id,
         created_at,
         documents: track_docs.clone(),
-        total_count: track_docs.len(),
+        total_count,
         status_summary,
         is_complete,
         latest_message,
     }))
+}
+
+/// Compute `(is_complete, latest_message)` from a track's status summary.
+///
+/// itsm-graph-core#13: `is_complete` is only true when the track has at least
+/// one registered document (`total_count > 0`) **and** none remain pending or
+/// processing. An empty track is reported as not-yet-complete with a distinct
+/// message so a freshly-created track cannot report success before its document
+/// rows are registered.
+fn compute_track_completion(
+    status: &StatusCounts,
+    total_count: usize,
+) -> (bool, Option<String>) {
+    let all_terminal = status.pending == 0 && status.processing == 0;
+    let is_complete = total_count > 0 && all_terminal;
+
+    let latest_message = if total_count == 0 {
+        Some("No documents registered yet".to_string())
+    } else if !is_complete {
+        Some(format!(
+            "Processing {}/{} documents...",
+            status.completed + status.failed,
+            total_count
+        ))
+    } else if status.failed > 0 {
+        Some(format!("Completed with {} errors", status.failed))
+    } else {
+        Some("All documents processed successfully".to_string())
+    };
+
+    (is_complete, latest_message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_track_completion;
+    use crate::handlers::documents_types::StatusCounts;
+
+    #[test]
+    fn empty_track_is_not_complete() {
+        // Regression for itsm-graph-core#13: zero documents must not be complete.
+        let (is_complete, msg) = compute_track_completion(&StatusCounts::default(), 0);
+        assert!(!is_complete, "a zero-document track must not report complete");
+        assert_eq!(msg.as_deref(), Some("No documents registered yet"));
+    }
+
+    #[test]
+    fn track_with_pending_is_not_complete() {
+        let status = StatusCounts {
+            pending: 1,
+            ..Default::default()
+        };
+        let (is_complete, msg) = compute_track_completion(&status, 1);
+        assert!(!is_complete);
+        assert_eq!(msg.as_deref(), Some("Processing 0/1 documents..."));
+    }
+
+    #[test]
+    fn track_with_processing_is_not_complete() {
+        let status = StatusCounts {
+            processing: 2,
+            completed: 1,
+            ..Default::default()
+        };
+        let (is_complete, _msg) = compute_track_completion(&status, 3);
+        assert!(!is_complete);
+    }
+
+    #[test]
+    fn fully_completed_track_is_complete() {
+        let status = StatusCounts {
+            completed: 3,
+            ..Default::default()
+        };
+        let (is_complete, msg) = compute_track_completion(&status, 3);
+        assert!(is_complete);
+        assert_eq!(msg.as_deref(), Some("All documents processed successfully"));
+    }
+
+    #[test]
+    fn completed_with_failures_reports_errors() {
+        let status = StatusCounts {
+            completed: 2,
+            failed: 1,
+            ..Default::default()
+        };
+        let (is_complete, msg) = compute_track_completion(&status, 3);
+        assert!(is_complete);
+        assert_eq!(msg.as_deref(), Some("Completed with 1 errors"));
+    }
 }
