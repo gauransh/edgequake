@@ -526,11 +526,20 @@ impl GraphStorageReadOps for PostgresRelationalGraphStorage {
         };
         let pool = self.pool.get().await?;
         let mut params = SqlParams::new();
-        let pattern_ph = params.bind(format!("%{}%", super::escape_like(&query.to_lowercase())));
+        let lowered = query.to_lowercase();
+        // Node ids are SCREAMING_SNAKE in LightRAG-style graphs; normalize a
+        // natural-language query ("bone marrow") to that shape so it can match
+        // the id form as well as the description text.
+        let normalized = lowered.replace(' ', "_");
+        let pattern_ph = params.bind(format!("%{}%", super::escape_like(&lowered)));
+        let norm_pattern_ph = params.bind(format!("%{}%", super::escape_like(&normalized)));
+        let exact_ph = params.bind(lowered.clone());
+        let norm_exact_ph = params.bind(normalized);
 
         let mut conditions = vec![build_scope_where("n", tenant, workspace)];
         conditions.push(format!(
             "(LOWER(n.node_id) LIKE {pattern_ph} ESCAPE '\\' \
+             OR LOWER(n.node_id) LIKE {norm_pattern_ph} ESCAPE '\\' \
              OR LOWER(n.properties->>'description') LIKE {pattern_ph} ESCAPE '\\')"
         ));
         // search_nodes matches entity_type case-sensitively (mirrors memory).
@@ -541,6 +550,12 @@ impl GraphStorageReadOps for PostgresRelationalGraphStorage {
 
         // Scope the LATERAL degree count to the node's tenant/workspace so it
         // does not count colliding-id edges from other tenants.
+        //
+        // Ranking: match quality strictly beats popularity — an exact id match
+        // (raw or space->underscore normalized) outranks an id substring,
+        // which outranks a description-only hit; degree breaks ties. Without
+        // this, a short id like BONE is crowded out of top-k by high-degree
+        // nodes whose descriptions merely mention the word.
         let sql = format!(
             "SELECT n.node_id AS nid, n.properties AS props, \
                     COALESCE(d.deg, 0)::BIGINT AS deg \
@@ -551,7 +566,11 @@ impl GraphStorageReadOps for PostgresRelationalGraphStorage {
                    AND e.tenant_id = n.tenant_id AND e.workspace_id = n.workspace_id \
              ) d ON TRUE \
              WHERE {} \
-             ORDER BY deg DESC, n.node_id ASC \
+             ORDER BY (LOWER(n.node_id) = {exact_ph} \
+                       OR LOWER(n.node_id) = {norm_exact_ph}) DESC, \
+                      (LOWER(n.node_id) LIKE {pattern_ph} ESCAPE '\\' \
+                       OR LOWER(n.node_id) LIKE {norm_pattern_ph} ESCAPE '\\') DESC, \
+                      deg DESC, n.node_id ASC \
              LIMIT {limit}",
             conditions.join(" AND ")
         );
