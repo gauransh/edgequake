@@ -11,6 +11,18 @@ pub fn is_terminal_failure_status(status: &str) -> bool {
     )
 }
 
+/// Statuses where ingestion has finished (successfully or not) — no further
+/// pipeline transitions are expected.
+///
+/// Used by the synchronous upload path (issue #18) to decide when to stop
+/// awaiting a document's completion.
+pub fn is_terminal_document_status(status: &str) -> bool {
+    matches!(
+        status.to_lowercase().as_str(),
+        "completed" | "indexed" | "failed" | "partial_failure" | "cancelled"
+    )
+}
+
 /// Statuses indicating the document is still moving through the pipeline.
 pub fn is_active_processing_status(status: &str) -> bool {
     matches!(
@@ -145,6 +157,33 @@ mod tests {
         );
         assert_eq!(err.as_deref(), Some("Pipeline processing failed"));
         assert!(warn.is_none());
+    }
+
+    #[test]
+    fn terminal_document_status_matches_finished_states() {
+        for s in [
+            "completed",
+            "indexed",
+            "failed",
+            "partial_failure",
+            "cancelled",
+            "COMPLETED",
+        ] {
+            assert!(is_terminal_document_status(s), "{s} should be terminal");
+        }
+        for s in [
+            "pending",
+            "processing",
+            "chunking",
+            "embedding",
+            "uploading",
+            "",
+        ] {
+            assert!(
+                !is_terminal_document_status(s),
+                "{s} should be non-terminal"
+            );
+        }
     }
 
     #[test]
