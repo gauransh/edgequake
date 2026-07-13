@@ -21,7 +21,11 @@ pub struct UploadDocumentRequest {
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
 
-    /// Whether to process asynchronously (default: false for backwards compatibility)
+    /// Whether to process asynchronously (default: false).
+    ///
+    /// `false` blocks until the document finishes (up to 120s) and returns
+    /// `200` with stats; if the wait budget is exceeded the server returns
+    /// `202` + `track_id`. `true` returns `202` immediately (issue #18).
     #[serde(default)]
     pub async_processing: bool,
 

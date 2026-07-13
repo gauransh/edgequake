@@ -236,19 +236,53 @@ async fn try_kv_storage_stats(
     // WHY: KV metadata doesn't have entity_count/relationship_count fields.
     // The actual entity/relationship data is stored in the graph, not metadata.
     // This fixes dashboard showing 0 entities despite successful extraction.
-    let entity_count = state
+    //
+    // issue #16: the `workspace_id`-property count under-reports ~40x when
+    // entity nodes were persisted without a consistent `workspace_id` tag. We
+    // ALSO count entities/edges actually derived from this workspace's
+    // documents (source-reference match — the same mechanism the per-document
+    // `entity_count` already trusts) and take the max. A correctly tagged graph
+    // is unaffected; an under-tagged one is repaired. Errors are logged (not
+    // silently swallowed to 0) so a real AGE failure is observable.
+    let entity_count_by_workspace = state
         .storage
         .graph_storage
         .node_count_by_workspace(&workspace_id)
         .await
-        .unwrap_or(0);
+        .unwrap_or_else(|e| {
+            tracing::warn!(workspace_id = %workspace_id, error = %e, "node_count_by_workspace failed — treating as 0");
+            0
+        });
+    let entity_count_by_source = state
+        .storage
+        .graph_storage
+        .node_count_by_source_prefixes(&workspace_doc_ids)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(workspace_id = %workspace_id, error = %e, "node_count_by_source_prefixes failed — treating as 0");
+            0
+        });
+    let entity_count = entity_count_by_workspace.max(entity_count_by_source);
 
-    let relationship_count = state
+    let relationship_count_by_workspace = state
         .storage
         .graph_storage
         .edge_count_by_workspace(&workspace_id)
         .await
-        .unwrap_or(0);
+        .unwrap_or_else(|e| {
+            tracing::warn!(workspace_id = %workspace_id, error = %e, "edge_count_by_workspace failed — treating as 0");
+            0
+        });
+    let relationship_count_by_source = state
+        .storage
+        .graph_storage
+        .edge_count_by_source_prefixes(&workspace_doc_ids)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(workspace_id = %workspace_id, error = %e, "edge_count_by_source_prefixes failed — treating as 0");
+            0
+        });
+    let relationship_count = relationship_count_by_workspace.max(relationship_count_by_source);
 
     // Embedding count requires chunk payloads; use per-doc prefix scan (no global keys_like).
     let chunk_count = chunk_count_from_metadata;

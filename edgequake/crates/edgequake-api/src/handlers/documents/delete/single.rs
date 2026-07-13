@@ -73,6 +73,65 @@ async fn resolve_kv_key_prefix(document_id: &str, state: &AppState) -> (String, 
     (document_id.to_string(), direct_metadata_key, false)
 }
 
+/// Delete a relational-only document row (no KV data) within tenant scope.
+///
+/// WHY: after a bulk/partial delete removes KV metadata but leaves the
+/// relational `documents` row, `list_documents` resurrects that row as a
+/// "ghost" (zeroed fields) via the read-model merge, while `DELETE /{id}`
+/// returned 404. This closes the gap: the relational row is authorized against
+/// the caller's scoped listing (same query that surfaced the ghost) and then
+/// hard-deleted, so the document leaves every read surface.
+///
+/// Returns `true` when a scoped relational row was found and deleted.
+#[cfg(feature = "postgres")]
+async fn delete_relational_only_document(
+    state: &AppState,
+    document_id: &str,
+    tenant_ctx: &TenantContext,
+) -> bool {
+    let Some(pdf_storage) = state.storage.pdf_storage.as_ref() else {
+        return false;
+    };
+    let Ok(doc_uuid) = Uuid::parse_str(document_id) else {
+        return false;
+    };
+
+    // Authorize + detect existence via the same tenant/workspace-scoped query
+    // that produced the ghost in the listing. Fail closed on any error so a
+    // missing scope cannot delete another tenant's row.
+    let scoped = match crate::document_read_model::list_relational_document_summaries(
+        state.pg_pool.as_ref(),
+        tenant_ctx,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::debug!(
+                document_id = %document_id,
+                error = %e,
+                "Relational-only ghost delete skipped — scoped listing unavailable"
+            );
+            return false;
+        }
+    };
+    if !scoped.iter().any(|d| d.id == document_id) {
+        return false;
+    }
+
+    match pdf_storage.delete_document_record(&doc_uuid).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                document_id = %document_id,
+                error = %e,
+                "Failed to delete relational-only ghost document row"
+            );
+            false
+        }
+    }
+}
+
 /// Delete a document by ID.
 #[utoipa::path(
     delete,
@@ -128,8 +187,32 @@ pub async fn delete_document(
         .flatten()
         .is_some();
 
-    // Document must have either chunks, metadata, or content
+    // Document must have either chunks, metadata, or content.
+    //
+    // Ghost-row path (issue #15): KV may hold nothing while the document still
+    // survives as a relational `documents` row (e.g. a prior bulk/partial delete
+    // removed KV but not the relational row). That row is exactly what the list
+    // merge resurrects with zeroed fields, yet the old code returned 404 here
+    // and left the ghost in place forever. Delete the relational row (scoped to
+    // the caller's tenant/workspace) so the document disappears from every read
+    // surface; only 404 when there is truly nothing to delete anywhere.
     if chunk_ids.is_empty() && !has_metadata && !has_content {
+        #[cfg(feature = "postgres")]
+        {
+            if delete_relational_only_document(&state, &document_id, &tenant_ctx).await {
+                tracing::info!(
+                    document_id = %document_id,
+                    "Deleted relational-only ghost document (no KV data present)"
+                );
+                return Ok(Json(DeleteDocumentResponse {
+                    document_id,
+                    deleted: true,
+                    chunks_deleted: 0,
+                    entities_affected: 0,
+                    relationships_affected: 0,
+                }));
+            }
+        }
         return Err(ApiError::NotFound(format!(
             "Document {} not found",
             document_id

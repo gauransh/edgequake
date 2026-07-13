@@ -75,6 +75,11 @@ pub async fn delete_all_documents(
     let mut skipped_documents = Vec::new();
     #[cfg(feature = "postgres")]
     let mut pdf_ids_to_delete = std::collections::HashSet::new();
+    // Every document id visited by the KV-driven pass (deleted or skipped), so
+    // the relational-only purge below neither double-counts nor force-deletes a
+    // document the KV pass intentionally skipped (issue #14/#15).
+    #[cfg_attr(not(feature = "postgres"), allow(unused_mut))]
+    let mut handled_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Define stuck threshold: documents processing for > 1 hour are considered stuck
     let stuck_threshold_secs = 3600; // 1 hour
@@ -87,6 +92,17 @@ pub async fn delete_all_documents(
                 .unwrap_or(&metadata_key)
                 .to_string()
         });
+
+        // Mark as handled up front (before the active-processing skip) so the
+        // relational-only purge does not revisit or force-delete this id.
+        handled_ids.insert(document_id.clone());
+
+        // OODA-90: content hash drives duplicate-detection cleanup so re-ingest
+        // of the same content is not blocked/confused after bulk delete.
+        let content_hash_opt = metadata
+            .get("content_hash")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         #[cfg(feature = "postgres")]
         let mut pdf_id_for_delete: Option<String> = None;
@@ -241,6 +257,40 @@ pub async fn delete_all_documents(
             }
         }
 
+        // OODA-90: delete the workspace-scoped content-hash key so re-ingesting
+        // the same content after a "Clear All" is not treated as a duplicate of
+        // a document that no longer exists.
+        if let (Some(content_hash), Some(workspace_id)) =
+            (content_hash_opt.as_ref(), workspace_id_opt.as_ref())
+        {
+            let hash_key =
+                crate::services::ContentHasher::workspace_hash_key(workspace_id, content_hash);
+            if let Err(e) = state
+                .storage
+                .kv_storage
+                .delete(std::slice::from_ref(&hash_key))
+                .await
+            {
+                tracing::warn!(key = %hash_key, error = %e, "Failed to delete content-hash key");
+            }
+        }
+
+        // issue #14/#15: the relational `documents` row must also go, otherwise
+        // the list merge resurrects it as a zeroed "ghost". Bulk delete never
+        // did this before — only single delete did.
+        #[cfg(feature = "postgres")]
+        if let Some(ref pdf_storage) = state.storage.pdf_storage {
+            if let Ok(doc_uuid) = uuid::Uuid::parse_str(&document_id) {
+                if let Err(e) = pdf_storage.delete_document_record(&doc_uuid).await {
+                    tracing::warn!(
+                        document_id = %document_id,
+                        error = %e,
+                        "Failed to delete relational documents row during bulk delete"
+                    );
+                }
+            }
+        }
+
         total_chunks_deleted += chunk_ids.len();
         deleted_count += 1;
 
@@ -254,6 +304,54 @@ pub async fn delete_all_documents(
             chunks = chunk_ids.len(),
             "Deleted document in bulk operation"
         );
+    }
+
+    // issue #14: enumerate + purge relational-only documents the KV pass never
+    // saw (KV metadata drifted / scoped to a legacy workspace). Without this,
+    // "Clear All" returns 200 but a fresh listing still shows those rows via the
+    // read-model merge. Scoped to the caller's tenant/workspace; active
+    // in-flight rows are skipped.
+    #[cfg(feature = "postgres")]
+    if let Some(ref pdf_storage) = state.storage.pdf_storage {
+        match crate::document_read_model::list_relational_document_summaries(
+            state.pg_pool.as_ref(),
+            &tenant_ctx,
+        )
+        .await
+        {
+            Ok(relational) => {
+                let purge_ids = crate::document_read_model::relational_ids_needing_purge(
+                    &handled_ids,
+                    &relational,
+                );
+                for id in purge_ids {
+                    if let Ok(doc_uuid) = uuid::Uuid::parse_str(&id) {
+                        match pdf_storage.delete_document_record(&doc_uuid).await {
+                            Ok(()) => {
+                                deleted_count += 1;
+                                tracing::info!(
+                                    document_id = %id,
+                                    "Purged relational-only document during bulk delete"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    document_id = %id,
+                                    error = %e,
+                                    "Failed to purge relational-only document during bulk delete"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Relational-only purge skipped during bulk delete (scoped listing unavailable)"
+                );
+            }
+        }
     }
 
     // Clean up pdf_documents rows linked to deleted workspace documents only.

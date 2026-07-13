@@ -221,11 +221,14 @@ pub async fn get_track_status(
 /// processing. An empty track is reported as not-yet-complete with a distinct
 /// message so a freshly-created track cannot report success before its document
 /// rows are registered.
-fn compute_track_completion(
-    status: &StatusCounts,
-    total_count: usize,
-) -> (bool, Option<String>) {
-    let all_terminal = status.pending == 0 && status.processing == 0;
+fn compute_track_completion(status: &StatusCounts, total_count: usize) -> (bool, Option<String>) {
+    // itsm-graph-core#13: a NULL/unrecognized status is NON-terminal. A freshly
+    // registered document row can appear in the scan before its status settles
+    // to 'pending' (or a relational backfill row can carry an unmapped status);
+    // counting that `unknown` bucket as terminal let a track report complete
+    // while a document had not actually finished. Only explicit terminal states
+    // (completed/indexed/failed/partial_failure/cancelled) may complete a track.
+    let all_terminal = status.pending == 0 && status.processing == 0 && status.unknown == 0;
     let is_complete = total_count > 0 && all_terminal;
 
     let latest_message = if total_count == 0 {
@@ -254,7 +257,10 @@ mod tests {
     fn empty_track_is_not_complete() {
         // Regression for itsm-graph-core#13: zero documents must not be complete.
         let (is_complete, msg) = compute_track_completion(&StatusCounts::default(), 0);
-        assert!(!is_complete, "a zero-document track must not report complete");
+        assert!(
+            !is_complete,
+            "a zero-document track must not report complete"
+        );
         assert_eq!(msg.as_deref(), Some("No documents registered yet"));
     }
 
@@ -301,5 +307,28 @@ mod tests {
         let (is_complete, msg) = compute_track_completion(&status, 3);
         assert!(is_complete);
         assert_eq!(msg.as_deref(), Some("Completed with 1 errors"));
+    }
+
+    #[test]
+    fn unknown_status_blocks_completion() {
+        // itsm-graph-core#13: a doc with NULL/unrecognized status is not done.
+        let status = StatusCounts {
+            completed: 2,
+            unknown: 1,
+            ..Default::default()
+        };
+        let (is_complete, msg) = compute_track_completion(&status, 3);
+        assert!(!is_complete, "unknown status must block track completion");
+        assert_eq!(msg.as_deref(), Some("Processing 2/3 documents..."));
+    }
+
+    #[test]
+    fn all_unknown_track_is_not_complete() {
+        let status = StatusCounts {
+            unknown: 2,
+            ..Default::default()
+        };
+        let (is_complete, _msg) = compute_track_completion(&status, 2);
+        assert!(!is_complete);
     }
 }

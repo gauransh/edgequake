@@ -11,6 +11,13 @@ use crate::handlers::auth::{ApiKeyRecord, RefreshTokenRecord};
 use crate::services::identity_storage::IdentityPolicy;
 use crate::state::{ApiSecurityConfig, PostgresRuntime, StorageRuntime};
 
+/// Synthetic principal id for the configured master API key (no `users` row).
+///
+/// MUST match `auth_validation::validate_presented_token` so a key minted by the
+/// master principal round-trips: it is stored as a NULL owner and read back as
+/// this id (issue #17).
+pub(crate) const MASTER_PRINCIPAL_USER_ID: &str = "master-api-key";
+
 /// SHA-256 hex digest for refresh-token O(1) PG lookup (indexed in migration 052).
 pub(crate) fn refresh_token_lookup_hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
@@ -261,9 +268,11 @@ async fn persist_api_key_pg(
 
     let key_uuid = Uuid::parse_str(&record.key_id)
         .map_err(|_| ApiError::Internal("invalid key_id for api key".into()))?;
-    let user_uuid = Uuid::parse_str(&record.user_id)
-        .map_err(|_| ApiError::Internal("invalid user_id for api key".into()))?;
-    let scope = Some(PgIsolationScope::default_identity(Some(user_uuid)));
+    // issue #17: master/system principals have no `users` row — their user_id is
+    // a synthetic non-UUID string. Store a NULL owner (the FK permits NULL) so
+    // they can still mint scoped keys instead of failing with a 500.
+    let user_uuid: Option<Uuid> = Uuid::parse_str(&record.user_id).ok();
+    let scope = Some(PgIsolationScope::default_identity(user_uuid));
 
     let mut conn = acquire_optional_pg_connection(pool, security, scope).await?;
 
@@ -318,7 +327,11 @@ fn api_key_from_row(row: ApiKeyRow) -> ApiKeyRecord {
     ) = row;
     ApiKeyRecord {
         key_id: key_id.to_string(),
-        user_id: user_id.to_string(),
+        // issue #17: a NULL user_id is a system/master-principal key; map it
+        // back to the synthetic principal so auth/list round-trip consistently.
+        user_id: user_id
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| MASTER_PRINCIPAL_USER_ID.to_string()),
         key_hash,
         prefix: key_prefix,
         name,
@@ -333,7 +346,7 @@ fn api_key_from_row(row: ApiKeyRow) -> ApiKeyRecord {
 #[cfg(feature = "postgres")]
 type ApiKeyRow = (
     Uuid,
-    Uuid,
+    Option<Uuid>,
     String,
     String,
     Option<String>,
@@ -354,9 +367,11 @@ async fn list_api_keys_pg(
         acquire_optional_pg_connection, release_optional_pg_connection, PgIsolationScope,
     };
 
-    let user_uuid = Uuid::parse_str(user_id)
-        .map_err(|_| ApiError::Internal("invalid user_id for api key list".into()))?;
-    let scope = Some(PgIsolationScope::default_identity(Some(user_uuid)));
+    // issue #17: master/system principals own NULL-user_id keys; `IS NOT
+    // DISTINCT FROM` matches both a real UUID owner and the NULL system owner
+    // in one query (NULL = NULL → true), instead of 500-ing on the parse.
+    let user_uuid: Option<Uuid> = Uuid::parse_str(user_id).ok();
+    let scope = Some(PgIsolationScope::default_identity(user_uuid));
 
     let mut conn = acquire_optional_pg_connection(pool, security, scope).await?;
 
@@ -365,7 +380,7 @@ async fn list_api_keys_pg(
         SELECT key_id, user_id, key_hash, key_prefix, name, scopes,
                is_active, created_at, last_used_at, expires_at
         FROM api_keys
-        WHERE user_id = $1
+        WHERE user_id IS NOT DISTINCT FROM $1
         ORDER BY created_at DESC
         "#,
     )
@@ -596,5 +611,44 @@ mod tests {
         let b = refresh_token_lookup_hash("abc-123");
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
+    }
+
+    /// issue #17: a NULL owner (system/master key) round-trips to the master
+    /// principal id; a real UUID owner round-trips to its string form.
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn api_key_from_row_maps_null_owner_to_master_principal() {
+        let now = chrono::Utc::now();
+        let key_id = Uuid::new_v4();
+
+        let system_row: ApiKeyRow = (
+            key_id,
+            None,
+            "hash".into(),
+            "eq_abc".into(),
+            Some("bench".into()),
+            Some(vec!["read".into(), "write".into()]),
+            true,
+            now,
+            None,
+            None,
+        );
+        let rec = api_key_from_row(system_row);
+        assert_eq!(rec.user_id, MASTER_PRINCIPAL_USER_ID);
+
+        let owner = Uuid::new_v4();
+        let user_row: ApiKeyRow = (
+            key_id,
+            Some(owner),
+            "hash".into(),
+            "eq_abc".into(),
+            None,
+            None,
+            true,
+            now,
+            None,
+            None,
+        );
+        assert_eq!(api_key_from_row(user_row).user_id, owner.to_string());
     }
 }
