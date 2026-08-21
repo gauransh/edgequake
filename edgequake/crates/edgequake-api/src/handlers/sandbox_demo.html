@@ -109,6 +109,7 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n, d = 3) => Number(n).toFixed(d);
 const cell = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
 
+let manifest = null;
 let anchorId = null;
 
 $("question").textContent = FROZEN_QUERY;
@@ -117,6 +118,7 @@ async function loadManifest() {
   const res = await fetch("/api/v1/query/sandbox-demo/manifest");
   if (!res.ok) throw new Error(`manifest: HTTP ${res.status}`);
   const m = await res.json();
+  manifest = m;
   anchorId = m.anchors.find((a) => a.includes("claude-code")) || m.anchors[0];
   $("anchor").textContent = anchorId;
   $("identity").innerHTML = [
@@ -219,7 +221,7 @@ async function run() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        workspace_id: $("identity").querySelector(".v").textContent,
+        workspace_id: manifest.workspace_id,
         query: FROZEN_QUERY,
         anchor_external_id: anchorId,
         candidate_k: CANDIDATE_K,

@@ -15,6 +15,26 @@ The demo exists only when EdgeQuake is started with `EDGEQUAKE_SANDBOX_PACK_DIR`
 pointing at an absolute path. Unset, the routes do not exist. Set, the pack must
 load or the process refuses to start.
 
+## Two ways to run it
+
+**`edgequake-sandbox-demo`** — the demo and nothing else: no `DATABASE_URL`,
+no migrations, no worker pool. The demo's index is one frozen `snapshot.json`
+in memory and its reranker is linked in, so none of that is on the hot path.
+Fewer moving parts between the presenter and the query is the point.
+
+```bash
+EDGEQUAKE_SANDBOX_PACK_DIR=/abs/path/to/pack \
+EDGEQUAKE_EMBEDDING_PROVIDER=ollama \
+EDGEQUAKE_EMBEDDING_MODEL=nomic-embed-text \
+EDGEQUAKE_EMBEDDING_DIMENSION=768 \
+  cargo run --bin edgequake-sandbox-demo
+# -> http://127.0.0.1:8080/demo/sandbox
+```
+
+**The full `edgequake` server** — set the same `EDGEQUAKE_SANDBOX_PACK_DIR`
+and the two routes appear alongside everything else. Needs the ordinary
+`DATABASE_URL` and the rest of the stack.
+
 ## Routes
 
 | Method | Path | |

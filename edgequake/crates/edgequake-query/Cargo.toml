@@ -21,7 +21,7 @@ edgequake-llm = { workspace = true }
 # pgvector, Redis, or Ollama adapters are pulled in, and nothing here can
 # make a network call.
 #
-# Pinned to itsm-graph-core 67163145f905167283e2216ccee9dbf613f04cd1
+# Pinned to itsm-graph-core 06f8fd112c65644f1f04d567dcb23bf3f90e3480
 # ("feat(serving): embedded, fail-closed graph-core runtime for in-process
 # rerank"). This is a documented sibling-checkout path dependency for the
 # one-day demo build; the committed integration should ultimately pin a

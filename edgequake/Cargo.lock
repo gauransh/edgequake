@@ -1917,6 +1917,7 @@ name = "edgequake"
 version = "0.15.2"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "criterion",
  "edgequake-api",

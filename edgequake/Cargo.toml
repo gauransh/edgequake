@@ -26,6 +26,12 @@ description = "EdgeQuake RAG server with knowledge graph capabilities"
 name = "edgequake"
 path = "src/main.rs"
 
+# The sandbox demo without the rest of the server: no DATABASE_URL, no
+# migrations, no worker pool. See src/bin/sandbox_demo.rs.
+[[bin]]
+name = "edgequake-sandbox-demo"
+path = "src/bin/sandbox_demo.rs"
+
 [[example]]
 name = "basic_rag"
 path = "examples/basic_rag.rs"
@@ -61,6 +67,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+axum = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 num_cpus = { workspace = true }
