@@ -34,7 +34,8 @@ pub mod types;
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
 pub use error::{Result, SandboxDemoError};
 pub use snapshot::{
-    EvidencePath, ResourceProfile, SandboxSnapshotIndex, SnapshotEdge, SnapshotNode,
+    EvidencePath, GraphNode, GraphProjection, ResourceProfile, SandboxSnapshotIndex, SnapshotEdge,
+    SnapshotNode,
 };
 pub use types::{
     AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,

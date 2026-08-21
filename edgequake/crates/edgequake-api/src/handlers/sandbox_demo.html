@@ -9,209 +9,1510 @@
     --bg: #0f1115; --panel: #171a21; --line: #262b35; --text: #e6e9ef;
     --muted: #8b93a3; --accent: #6ea8fe; --deny: #ff7b72; --allow: #56d364;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    /* Entity-type palette. The first three carry the bulk types and are the
+       only three that clear the all-pairs colourblind floors on this
+       surface; every other type here is a handful of nodes, and is told
+       apart by SHAPE and a permanent label, with hue as a convenience. */
+    --t-run: #3987e5; --t-resource: #d95926; --t-identity: #199e70;
+    --t-policy: #c98500; --t-agent: #d55181; --t-outcome: #008300;
+    --t-workspace: #9085e9; --t-other: #8b93a3;
+    --edge: rgba(139, 147, 163, .30);
+    --edge-allowed: rgba(57, 135, 229, .13);
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 2rem 1.5rem 4rem; background: var(--bg); color: var(--text);
+    margin: 0; padding: 1.6rem 1.5rem 3rem; background: var(--bg); color: var(--text);
     font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  main { max-width: 62rem; margin: 0 auto; }
+  main { max-width: 96rem; margin: 0 auto; }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
-  .sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
+  .sub { color: var(--muted); margin: 0 0 1.1rem; font-size: .9rem; max-width: 62rem; }
   .panel {
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
     padding: 1rem 1.15rem; margin-bottom: 1rem;
   }
-  .question { font-size: 1.05rem; margin: 0 0 .75rem; }
-  .anchor { font-family: var(--mono); color: var(--accent); }
+
+  /* ── ask ──────────────────────────────────────────────────────────── */
+  .ask { display: flex; gap: .6rem; }
+  #q {
+    flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px; padding: .6rem .75rem;
+    font: inherit; font-size: .95rem;
+  }
+  #q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #q::placeholder { color: var(--muted); }
   button {
     background: var(--accent); color: #0b0d11; border: 0; border-radius: 7px;
     padding: .6rem 1.1rem; font-size: .95rem; font-weight: 600; cursor: pointer;
   }
   button:disabled { opacity: .5; cursor: progress; }
-  .identity { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem 1.25rem; }
-  .identity div { min-width: 0; }
-  .identity dt, .k { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
-  .identity dd, .v { margin: .15rem 0 0; font-family: var(--mono); font-size: .82rem; overflow-wrap: anywhere; }
+  button.ghost {
+    background: none; color: var(--muted); border: 1px solid var(--line);
+    font-weight: 500; font-size: .78rem; padding: .3rem .55rem;
+  }
+  button.ghost:hover { color: var(--text); }
+  .suggestions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
+  .suggestions button {
+    background: none; color: var(--muted); border: 1px dashed var(--line);
+    border-radius: 999px; padding: .25rem .6rem; font-size: .78rem; font-weight: 400;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .suggestions button:hover { border-style: solid; color: var(--text); }
+  .suggestions .lab { color: var(--accent); }
+  .askline {
+    display: flex; align-items: baseline; gap: .45rem; flex-wrap: wrap;
+    margin-bottom: .7rem; font-size: .9rem;
+  }
+  .askline label { color: var(--muted); }
+  .askline .why { color: var(--muted); font-size: .72rem; flex: 1 1 100%; line-height: 1.5; max-width: 62rem; }
+  #anchor-runs { color: var(--muted); font-size: .78rem; font-family: var(--mono); }
+  .askmeta {
+    display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+    margin-top: .8rem; font-size: .78rem; color: var(--muted);
+  }
+  .views { display: inline-flex; gap: .25rem; margin-right: .3rem; }
+  .views .view[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+  .ask-profile { margin-top: .5rem; width: 100%; }
+  select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: .25rem .4rem; font: inherit; font-size: .78rem;
+    font-family: var(--mono);
+  }
+  .askmeta .fixed { font-family: var(--mono); }
+  #status { margin: .8rem 0 0; font-size: .8rem; color: var(--muted); font-family: var(--mono); }
+  #error {
+    margin-top: .8rem; border: 1px solid rgba(255,123,114,.4); border-radius: 8px;
+    padding: .7rem .8rem; color: var(--deny); font-family: var(--mono);
+    font-size: .82rem; white-space: pre-wrap;
+  }
   .badge {
     display: inline-block; padding: .15rem .5rem; border-radius: 999px;
     font-size: .72rem; font-weight: 700; letter-spacing: .04em;
     background: rgba(86,211,100,.15); color: var(--allow); border: 1px solid rgba(86,211,100,.35);
   }
-  .card { border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; margin-bottom: .7rem; background: var(--panel); }
-  .card header { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
-  .rank { font-size: 1.4rem; font-weight: 700; color: var(--accent); min-width: 1.6rem; }
-  .label { font-family: var(--mono); font-size: .95rem; }
-  .move { font-size: .78rem; color: var(--muted); }
-  .move.up { color: var(--allow); }
-  .move.down { color: var(--deny); }
-  .scores { display: flex; gap: 1.6rem; margin: .6rem 0 .5rem; flex-wrap: wrap; }
-  .bar { height: 5px; border-radius: 3px; background: #2a2f3a; margin-top: .3rem; overflow: hidden; width: 8rem; }
-  .bar > i { display: block; height: 100%; background: var(--accent); }
-  .path { font-family: var(--mono); font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
-  .path b { color: var(--text); font-weight: 600; }
-  .path .denied { color: var(--deny); }
-  .path .allowed { color: var(--allow); }
-  .ev { font-size: .8rem; color: var(--muted); margin-top: .35rem; }
-  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
+  .badge.off { background: rgba(255,123,114,.15); color: var(--deny); border-color: rgba(255,123,114,.35); }
+
+  /* ── identity ─────────────────────────────────────────────────────── */
+  .identity { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem 1.25rem; }
+  .identity div { min-width: 0; }
+  .k { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
+  .v { margin: .15rem 0 0; font-family: var(--mono); font-size: .82rem; overflow-wrap: anywhere; }
+
+  /* ── the split ────────────────────────────────────────────────────── */
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 28rem; gap: 1rem; align-items: start; }
+  @media (max-width: 1120px) { .app { grid-template-columns: minmax(0, 1fr); } }
+
+  .stage {
+    position: relative; background: #12141a; border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; height: min(74vh, 800px); min-height: 460px;
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.grabbing { cursor: grabbing; }
+  .overlay { position: absolute; z-index: 2; }
+  .toolbar { top: .7rem; left: .7rem; right: .7rem; display: flex; gap: .4rem; flex-wrap: wrap; }
+  .hint {
+    top: .7rem; right: .7rem; font-size: .72rem; color: var(--muted);
+    background: rgba(15,17,21,.85); border: 1px solid var(--line);
+    border-radius: 6px; padding: .3rem .5rem;
+  }
+  .legend {
+    left: .7rem; bottom: .7rem; width: 15rem; max-height: calc(100% - 4.5rem);
+    display: flex; flex-direction: column; background: rgba(23,26,33,.94);
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  }
+  .legend > header {
+    display: flex; align-items: center; justify-content: space-between; gap: .4rem;
+    padding: .45rem .6rem; border-bottom: 1px solid var(--line);
+    font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+  }
+  .legend .body { overflow: auto; padding: .3rem; }
+  .legend.closed .body { display: none; }
+  .legend .row {
+    display: flex; align-items: center; gap: .45rem; width: 100%; padding: .25rem .35rem;
+    border: 0; background: none; border-radius: 5px; color: var(--text);
+    font: inherit; font-size: .78rem; font-weight: 400; cursor: pointer; text-align: left;
+  }
+  .legend .row:hover { background: rgba(139,147,163,.12); }
+  .legend .row[aria-pressed="false"] { color: var(--muted); }
+  .legend .row[aria-pressed="false"] svg { opacity: .35; }
+  .legend .row .count { margin-left: auto; color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
+  .legend .sep {
+    margin: .35rem .35rem .2rem; padding-top: .35rem; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+  }
+  .legend .legend-note { padding: .2rem .4rem .35rem; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+
+  .tip {
+    pointer-events: none; max-width: 20rem; background: rgba(23,26,33,.97);
+    border: 1px solid var(--line); border-radius: 8px; padding: .45rem .6rem;
+    font-size: .78rem; display: none;
+  }
+  .tip .t { color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; }
+  .tip .l { font-family: var(--mono); margin: .1rem 0; }
+  .tip .m { color: var(--muted); }
+
+  .details {
+    right: .7rem; bottom: .7rem; width: 17rem; max-height: calc(100% - 4.5rem); overflow: auto;
+    background: rgba(23,26,33,.97); border: 1px solid var(--line); border-radius: 8px;
+    padding: .7rem; display: none; font-size: .8rem;
+  }
+  .details.on { display: block; }
+  .details h3 { margin: 0 0 .4rem; font-size: .85rem; display: flex; align-items: center; gap: .4rem; font-family: var(--mono); }
+  .details .close { float: right; margin-left: .4rem; }
+  .details dl { display: grid; grid-template-columns: auto 1fr; gap: .1rem .6rem; margin: 0; }
+  .details dt { color: var(--muted); font-size: .72rem; }
+  .details dd { margin: 0; font-family: var(--mono); font-size: .75rem; overflow-wrap: anywhere; }
+  .details .nbrs { margin-top: .5rem; border-top: 1px solid var(--line); padding-top: .4rem; }
+  .details .nbr {
+    display: flex; gap: .4rem; align-items: center; width: 100%; padding: .2rem .3rem;
+    border: 0; background: none; border-radius: 5px; color: var(--muted);
+    font: inherit; font-size: .75rem; font-weight: 400; cursor: pointer; text-align: left;
+  }
+  .details .nbr:hover { background: rgba(139,147,163,.12); color: var(--text); }
+  .details .nbr .rel { margin-left: auto; font-family: var(--mono); font-size: .7rem; }
+
+  /* ── the answer ───────────────────────────────────────────────────── */
+  .rail { display: flex; flex-direction: column; gap: 1rem; }
+  .rail > .panel, .rail > details.panel { margin: 0; }
+  .verdict { border-left: 3px solid var(--line); padding-left: .7rem; margin: .8rem 0; }
+  .verdict.changed { border-left-color: var(--allow); }
+  .verdict.partial { border-left-color: #c98500; }
+  .verdict.unchanged { border-left-color: var(--muted); }
+  .verdict h3 { margin: 0; font-size: .9rem; }
+  .verdict p { margin: .3rem 0 0; color: var(--muted); font-size: .82rem; }
+  .verdict .caution {
+    margin-top: .5rem; padding-top: .5rem; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: .82rem;
+  }
+  .verdict .caution b { color: var(--text); }
+
+  .card {
+    border: 1px solid var(--line); border-radius: 9px; padding: .7rem .8rem; margin-bottom: .55rem;
+    background: none; color: inherit; font: inherit; font-weight: 400; width: 100%;
+    text-align: left; cursor: pointer; display: block;
+  }
+  .card:hover { border-color: var(--muted); }
+  .card[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .card header { display: flex; align-items: baseline; gap: .5rem; }
+  .rank { font-size: 1.15rem; font-weight: 700; color: var(--accent); min-width: 1.1rem; font-variant-numeric: tabular-nums; }
+  .label { font-family: var(--mono); font-size: .85rem; overflow-wrap: anywhere; }
+  .final { margin-left: auto; font-family: var(--mono); font-size: .85rem; color: var(--muted); }
+  .move { font-size: .75rem; color: var(--muted); margin-top: .4rem; }
+  .move .up { color: var(--allow); }
+  .scores { font-family: var(--mono); font-size: .75rem; color: var(--muted); margin-top: .25rem; }
+  .path { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; font-size: .75rem; color: var(--muted); }
+  .path .seg { font-family: var(--mono); color: var(--text); }
+  .path .rel { font-family: var(--mono); }
+  .path .rel.denied { color: var(--deny); }
+  .path .rel.allowed { color: var(--allow); }
+  .ev { font-size: .75rem; color: var(--muted); margin-top: .35rem; }
+
+  .slope { width: 100%; margin-top: .4rem; }
+  .slope text { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .slope text.lab { fill: var(--text); }
+  .slope g.hit { cursor: pointer; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  th, td { text-align: left; padding: .3rem .45rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
   td.mono { font-family: var(--mono); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   details summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
-  .err { border-color: var(--deny); color: var(--deny); font-family: var(--mono); font-size: .85rem; white-space: pre-wrap; }
-  .note { color: var(--muted); font-size: .8rem; margin-top: .6rem; }
+  .note { color: var(--muted); font-size: .8rem; margin-top: .6rem; line-height: 1.5; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>
 </head>
 <body>
 <main>
   <h1>Sandbox evidence &rarr; EdgeQuake retrieval &rarr; embedded graph-core rerank</h1>
   <p class="sub">
-    One process. The final ordering below is produced by the graph-core model
-    linked into this EdgeQuake binary &mdash; no graph-core HTTP, S3, S3&nbsp;Vectors,
-    or DynamoDB call happens on this path.
+    One process. The ordering below is produced by the graph-core model linked
+    into this EdgeQuake binary &mdash; no graph-core HTTP, S3, S3&nbsp;Vectors, or
+    DynamoDB call happens on this path. The graph on the left is the frozen
+    snapshot that model was trained on; every answer is a path across it.
   </p>
 
   <section class="panel">
-    <p class="question" id="question"></p>
-    <p class="sub" style="margin:0 0 .9rem">
-      Anchor: <span class="anchor" id="anchor"></span>
-    </p>
-    <button id="run">Run the query</button>
-    <p class="note" id="status"></p>
+    <div class="askline">
+      <label for="anchor">Ask about</label>
+      <select id="anchor"></select>
+      <span id="anchor-runs"></span>
+      <span class="why">the anchor is a control, not part of the sentence: this endpoint
+      resolves it straight into the model's id space and never infers it from what you
+      type. Click any agent profile in the graph to switch.</span>
+    </div>
+    <form class="ask" id="ask">
+      <label class="sr" for="q">Ask this graph a question</label>
+      <input type="text" id="q" autocomplete="off" placeholder="Ask a question about this workspace&hellip;" />
+      <button type="submit" id="run">Ask</button>
+    </form>
+    <div class="suggestions" id="suggestions"></div>
+    <div class="askmeta">
+      <span class="fixed" id="ks"></span>
+    </div>
+    <p id="status"></p>
+    <div id="error" hidden></div>
   </section>
 
-  <section class="panel" id="identity-panel">
-    <div class="identity" id="identity"></div>
-  </section>
+  <div class="app">
+    <div class="stage" id="stage">
+      <canvas id="canvas"></canvas>
+      <div class="overlay toolbar">
+        <span class="views" id="views" hidden>
+          <button class="ghost view" id="view-answer" type="button" aria-pressed="true">The answer</button>
+          <button class="ghost view" id="view-snapshot" type="button" aria-pressed="false">Whole snapshot</button>
+        </span>
+        <button class="ghost" id="fit" type="button">Fit</button>
+        <button class="ghost" id="relayout" type="button">Re-run layout</button>
+        <button class="ghost" id="clear" type="button" hidden>Clear selection</button>
+      </div>
+      <div class="overlay hint" id="hint">loading the snapshot&hellip;</div>
+      <div class="overlay legend" id="legend" hidden>
+        <header>
+          <span>Legend &amp; filters</span>
+          <button class="ghost" id="legend-toggle" type="button" aria-expanded="true">hide</button>
+        </header>
+        <div class="body" id="legend-body"></div>
+      </div>
+      <div class="overlay details" id="node-details" role="region" aria-label="Selected entity"></div>
+      <div class="overlay tip" id="tip" role="status"></div>
+    </div>
 
-  <div id="error" class="panel err" hidden></div>
-  <section id="results"></section>
+    <div class="rail">
+      <section class="panel" id="answer">
+        <p class="note" style="margin-top:0">
+          Ask the frozen question, or one of your own. The resources graph-core
+          approves appear here; click one and the graph walks its evidence path
+          &mdash; the agent profile, the run, the resource, and the decision
+          policy made on that access.
+        </p>
+      </section>
+      <section class="panel" id="identity-panel">
+        <div class="identity" id="identity"></div>
+      </section>
+      <details class="panel" id="comparison" hidden>
+        <summary>Semantic-only order over the same candidate set, for comparison</summary>
+        <table id="semantic-table"></table>
+        <p class="note">
+          This is what EdgeQuake's embeddings alone proposed. It is shown so the
+          reordering is visible; the answer above is the graph-core-approved
+          order, which is the only order this endpoint returns.
+        </p>
+      </details>
+    </div>
+  </div>
 
-  <details class="panel" id="comparison" hidden>
-    <summary>Semantic-only order over the same candidate set, for comparison</summary>
-    <table id="semantic-table"></table>
-    <p class="note">
-      This is what EdgeQuake's embeddings alone proposed. It is shown so the
-      reordering is visible; the answer above is the graph-core-approved order,
-      which is the only order this endpoint returns.
-    </p>
-  </details>
+  <p class="note" style="max-width:62rem">
+    <b>These scores are not percentages.</b> <code>structural_score</code> and
+    <code>final_score</code> are model-internal magnitudes, not probabilities or
+    confidences. The claim is the <b>ordering</b>, and the evidence path under
+    each result is what makes it checkable. Node position carries no meaning
+    beyond connectivity: the layout is a seeded force simulation, so the same
+    snapshot always draws the same picture.
+  </p>
 </main>
 
 <script>
+"use strict";
+
 const FROZEN_QUERY =
   "For this agent profile, which governed resources show the riskiest and " +
   "structurally closest access pattern?";
+const SUGGESTIONS = [
+  { label: "the frozen demo query", text: FROZEN_QUERY },
+  { label: "refusals", text: "Which governed resources did policy refuse for this agent profile?" },
+  { label: "shared reads", text: "Which directories do this profile's runs read most often?" },
+  { label: "executables", text: "Which executables did this profile's runs try to run?" },
+];
 const CANDIDATE_K = 20;
 const TOP_K = 5;
+// Below this the final scores are a hundredth apart or less: which of them is
+// 2nd versus 4th would flip under a different seed, so only membership holds.
+const SPREAD_FLOOR = 0.01;
+
+// entity_type -> [colour variable, shape, display name]. A type outside this
+// table still draws — neutral, as a circle.
+const TYPE_STYLE = {
+  run: ["--t-run", "circle", "Run"],
+  resource: ["--t-resource", "rsquare", "Resource"],
+  identity: ["--t-identity", "diamond", "Identity"],
+  policy: ["--t-policy", "triangle", "Policy"],
+  agent_profile: ["--t-agent", "hexagon", "Agent profile"],
+  outcome: ["--t-outcome", "capsule", "Outcome"],
+  workspace: ["--t-workspace", "square", "Workspace"],
+  host: ["--t-other", "tridown", "Host"],
+  image: ["--t-other", "pentagon", "Image"],
+};
+const SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+const DENIED = "denied_access";
+const ALLOWED = "allowed_access";
 
 const $ = (id) => document.getElementById(id);
-const fmt = (n, d = 3) => Number(n).toFixed(d);
-const cell = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+const fmt = (n, d = 4) => (n === null || n === undefined ? "—" : Number(n).toFixed(d));
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
 
 let manifest = null;
 let anchorId = null;
 
-$("question").textContent = FROZEN_QUERY;
+// ── the graph ───────────────────────────────────────────────────────────────
+let NODES = [];        // {id, label, entity_type, deg, allowed, denied}
+let EDGES = [];        // [source, target, relationIndex, actionIndex]
+let RELATIONS = [];
+let ACTIONS = [];
+let INDEX = new Map(); // external_id -> node index
+let adjacency = [];
+let typesPresent = [];
+let alwaysLabel = new Set();
+const typeOn = new Set();
+const classOn = { structure: true, allowed: false, denied: true };
 
-async function loadManifest() {
-  const res = await fetch("/api/v1/query/sandbox-demo/manifest");
-  if (!res.ok) throw new Error(`manifest: HTTP ${res.status}`);
-  const m = await res.json();
-  manifest = m;
-  anchorId = m.anchors.find((a) => a.includes("claude-code")) || m.anchors[0];
-  $("anchor").textContent = anchorId;
-  $("identity").innerHTML = [
-    cell("workspace", m.workspace_id),
-    cell("snapshot revision", m.snapshot_revision),
-    cell("model version", m.model_version),
-    cell("mapping hash", m.mapping_hash),
-    cell("embedding model", m.embedding_model),
-    cell("graph", `${m.entities} entities / ${m.relationships} relationships`),
-    cell("weights", `semantic ${m.weights.semantic} &middot; structural ${m.weights.structural}`),
-    cell("graph-core commit", m.commits.graph_core.slice(0, 12)),
-    cell("sandbox commit", m.commits.sandbox.slice(0, 12)),
-  ].join("");
+const styleOf = (type) => TYPE_STYLE[type] || ["--t-other", "circle", type];
+
+let CSS = {};
+function readCss() {
+  const cs = getComputedStyle(document.documentElement);
+  const read = (name) => cs.getPropertyValue(name).trim();
+  CSS = {
+    text: read("--text"), muted: read("--muted"), stage: "#12141a",
+    edge: read("--edge"), edgeAllowed: read("--edge-allowed"),
+    deny: read("--deny"), allow: read("--allow"), accent: read("--accent"),
+    other: read("--t-other"),
+  };
+  for (const type in TYPE_STYLE) CSS[type] = read(TYPE_STYLE[type][0]);
+}
+const colorOf = (type) => CSS[type] || CSS.other;
+
+function edgeClass(edge) {
+  const relation = RELATIONS[edge[2]];
+  if (relation === DENIED) return "denied";
+  if (relation === ALLOWED) return "allowed";
+  return "structure";
 }
 
-function moveLabel(before, after) {
-  if (!before) return { cls: "", text: "" };
-  const delta = before - after;
-  if (delta > 0) return { cls: "up", text: `&uarr; up ${delta} from semantic rank ${before}` };
-  if (delta < 0) return { cls: "down", text: `&darr; down ${-delta} from semantic rank ${before}` };
-  return { cls: "", text: `unchanged from semantic rank ${before}` };
+function ingestGraph(data) {
+  RELATIONS = data.relations;
+  ACTIONS = data.actions;
+  NODES = data.nodes.map((n) => ({
+    id: n.id,
+    label: n.label,
+    entity_type: n.entity_type || "unknown",
+    deg: 0, allowed: 0, denied: 0,
+  }));
+  EDGES = data.edges;
+  INDEX = new Map(NODES.map((n, i) => [n.id, i]));
+  adjacency = NODES.map(() => []);
+  EDGES.forEach((edge, e) => {
+    const source = edge[0], target = edge[1];
+    adjacency[source].push(e);
+    adjacency[target].push(e);
+    NODES[source].deg++; NODES[target].deg++;
+    const cls = edgeClass(edge);
+    if (cls === "allowed" || cls === "denied") {
+      NODES[source][cls]++; NODES[target][cls]++;
+    }
+  });
+
+  const counts = new Map();
+  NODES.forEach((n) => counts.set(n.entity_type, (counts.get(n.entity_type) || 0) + 1));
+  const known = Object.keys(TYPE_STYLE).filter((t) => counts.has(t));
+  const rest = [...counts.keys()].filter((t) => !TYPE_STYLE[t]).sort();
+  typesPresent = known.concat(rest).map((t) => ({ type: t, count: counts.get(t) }));
+  typesPresent.forEach((t) => typeOn.add(t.type));
+  // Few enough nodes to label permanently — and that label, not the hue, is
+  // what tells these types apart.
+  alwaysLabel = new Set(typesPresent.filter((t) => t.count <= 8).map((t) => t.type));
 }
 
-function pathHtml(p, relation) {
-  return p
-    .map((seg, i) => {
-      if (i === 2) {
-        const cls = relation === "denied_access" ? "denied" : "allowed";
-        return `<span class="${cls}">--${seg}--&gt;</span>`;
+// ── layout: seeded, so the same snapshot always draws the same picture ──────
+let X = new Float64Array(0), Y = new Float64Array(0);
+let vx = new Float64Array(0), vy = new Float64Array(0);
+let pinned = new Uint8Array(0), SPRING = new Float64Array(0), radius = new Float64Array(0);
+const W = 1500, H = 1060, TOTAL_TICKS = 560;
+const CLASS_SPRING = { structure: 1.0, allowed: 0.05, denied: 0.9 };
+let seed = 20260821, ticks = 0;
+
+function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+
+function prepareLayout() {
+  const n = NODES.length;
+  X = new Float64Array(n); Y = new Float64Array(n);
+  vx = new Float64Array(n); vy = new Float64Array(n);
+  pinned = new Uint8Array(n); radius = new Float64Array(n);
+  for (let i = 0; i < n; i++) radius[i] = Math.min(11, 2.8 + Math.log2(NODES[i].deg + 1));
+  // Every run hangs off the same few hubs — workspace, host, image, policy,
+  // outcome, agent profile — so an unweighted spring collapses the graph onto
+  // them. Damping each spring by its endpoints' degree lets the edges that
+  // actually distinguish one run from another set the shape instead.
+  SPRING = new Float64Array(EDGES.length);
+  for (let e = 0; e < EDGES.length; e++) {
+    const source = EDGES[e][0], target = EDGES[e][1];
+    const base = CLASS_SPRING[edgeClass(EDGES[e])];
+    SPRING[e] = Math.min(2.5, Math.max(0.04,
+      base * (9 / Math.sqrt(NODES[source].deg * NODES[target].deg))));
+  }
+  seedPositions();
+}
+
+function seedPositions() {
+  seed = 20260821;
+  const rings = {};
+  typesPresent.forEach((t, i) => { rings[t.type] = 60 + i * 52; });
+  for (let i = 0; i < NODES.length; i++) {
+    const r = (rings[NODES[i].entity_type] || 200) * (0.65 + rand() * 0.7);
+    const a = rand() * Math.PI * 2;
+    X[i] = W / 2 + Math.cos(a) * r;
+    Y[i] = H / 2 + Math.sin(a) * r;
+    vx[i] = vy[i] = 0;
+    pinned[i] = 0;
+  }
+  ticks = 0;
+}
+
+function tick() {
+  const n = NODES.length;
+  const k = Math.sqrt((W * H) / n);
+  const temp = Math.max(0.5, 30 * Math.pow(1 - ticks / TOTAL_TICKS, 1.5));
+  for (let i = 0; i < n; i++) { vx[i] = 0; vy[i] = 0; }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let dx = X[i] - X[j], dy = Y[i] - Y[j];
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = (rand() - 0.5) * 0.6; dy = (rand() - 0.5) * 0.6; d2 = 0.36; }
+      const d = Math.sqrt(d2);
+      const f = (k * k * 1.7) / d2;
+      const ux = (dx / d) * f, uy = (dy / d) * f;
+      vx[i] += ux; vy[i] += uy; vx[j] -= ux; vy[j] -= uy;
+    }
+  }
+  for (let e = 0; e < EDGES.length; e++) {
+    const source = EDGES[e][0], target = EDGES[e][1];
+    const dx = X[source] - X[target], dy = Y[source] - Y[target];
+    const d = Math.max(0.01, Math.hypot(dx, dy));
+    const f = ((d * d) / k) * SPRING[e] * 0.03;
+    const ux = (dx / d) * f, uy = (dy / d) * f;
+    vx[source] -= ux; vy[source] -= uy; vx[target] += ux; vy[target] += uy;
+  }
+  for (let i = 0; i < n; i++) {
+    if (pinned[i]) continue;
+    const d = Math.hypot(vx[i], vy[i]) || 1;
+    const lim = Math.min(d, temp);
+    X[i] += (vx[i] / d) * lim - (X[i] - W / 2) * 0.0009;
+    Y[i] += (vy[i] / d) * lim - (Y[i] - H / 2) * 0.0009;
+  }
+  ticks++;
+}
+
+// ── two views of the same nodes ─────────────────────────────────────────────
+// "snapshot" is the force-laid whole graph. "answer" is the subgraph a query
+// actually returned — the anchor, the runs it went through, the resources
+// graph-core approved — laid out by rank rather than by force, because in
+// this view position means something: rank 1 is at the top.
+let MODE = "snapshot";
+let answer = null;
+
+const PX = (i) => (MODE === "answer" ? answer.pos[i].x : X[i]);
+const PY = (i) => (MODE === "answer" ? answer.pos[i].y : Y[i]);
+const inView = (i) =>
+  MODE === "answer" ? answer.set.has(i) : typeOn.has(NODES[i].entity_type);
+
+function nodeRadius(i) {
+  if (MODE === "answer") {
+    const type = NODES[i].entity_type;
+    return type === "agent_profile" ? 13 : type === "resource" ? 11 : 9;
+  }
+  return Math.max(2.4, radius[i] * Math.min(1.6, Math.sqrt(scale)));
+}
+
+// ── viewport ────────────────────────────────────────────────────────────────
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d");
+let scale = 1, ox = 0, oy = 0, cw = 0, ch = 0;
+const sx = (x) => x * scale + ox;
+const sy = (y) => y * scale + oy;
+
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  cw = rect.width; ch = rect.height;
+  canvas.width = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+new ResizeObserver(resize).observe($("stage"));
+
+function visibleNodes() {
+  if (MODE === "answer") return [...answer.set];
+  const out = [];
+  for (let i = 0; i < NODES.length; i++) if (typeOn.has(NODES[i].entity_type)) out.push(i);
+  return out;
+}
+
+// Fits into the band the overlays leave free: a node centred under the legend
+// or the details card is not visible.
+function fit(indices, pad) {
+  const list = indices && indices.length ? indices : visibleNodes();
+  if (!list.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  list.forEach((i) => {
+    x0 = Math.min(x0, PX(i)); x1 = Math.max(x1, PX(i));
+    y0 = Math.min(y0, PY(i)); y1 = Math.max(y1, PY(i));
+  });
+  const pd = pad || 50;
+  const legend = $("legend"), details = $("node-details");
+  const insetL = legend.hidden || legend.classList.contains("closed") ? 16 : legend.offsetWidth + 22;
+  const insetR = details.classList.contains("on") ? details.offsetWidth + 22 : 16;
+  const insetT = 48;
+  const availW = Math.max(160, cw - insetL - insetR - pd * 2);
+  const availH = Math.max(160, ch - insetT - pd * 2);
+  scale = Math.max(0.15, Math.min(4, Math.min(availW / Math.max(1, x1 - x0),
+                                              availH / Math.max(1, y1 - y0))));
+  ox = insetL + pd + availW / 2 - ((x0 + x1) / 2) * scale;
+  oy = insetT + pd + availH / 2 - ((y0 + y1) / 2) * scale;
+}
+
+// ── selection ───────────────────────────────────────────────────────────────
+let selected = null, hovered = null, path = null, neighbours = new Set();
+
+function setSelected(index, focus) {
+  selected = index === undefined ? null : index;
+  neighbours = new Set();
+  if (selected !== null) {
+    adjacency[selected].forEach((e) =>
+      neighbours.add(EDGES[e][0] === selected ? EDGES[e][1] : EDGES[e][0]));
+  }
+  renderNodeDetails();
+  $("clear").hidden = selected === null && !path;
+  if (focus && selected !== null && MODE === "snapshot") {
+    fit([selected].concat([...neighbours].slice(0, 60)), 80);
+  }
+  draw();
+}
+
+function setPath(next) {
+  path = next || null;
+  $("clear").hidden = selected === null && !path;
+  if (path && MODE === "snapshot") fit(path.nodes, 120);
+  draw();
+}
+
+// A candidate that is not part of the answer has no place in the answer view;
+// showing it means going back to the whole graph.
+function reveal(index) {
+  if (MODE === "answer" && answer && !answer.set.has(index)) setMode("snapshot");
+}
+
+// ── drawing ─────────────────────────────────────────────────────────────────
+function shapePath(g, shape, x, y, r) {
+  g.beginPath();
+  switch (shape) {
+    case "square": g.rect(x - r, y - r, r * 2, r * 2); break;
+    case "rsquare":
+      if (g.roundRect) g.roundRect(x - r, y - r, r * 2, r * 2, Math.min(3, r * 0.45));
+      else g.rect(x - r, y - r, r * 2, r * 2);
+      break;
+    case "diamond":
+      g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y);
+      g.closePath();
+      break;
+    case "triangle":
+      g.moveTo(x, y - r); g.lineTo(x + r * 0.92, y + r * 0.72); g.lineTo(x - r * 0.92, y + r * 0.72);
+      g.closePath();
+      break;
+    case "tridown":
+      g.moveTo(x, y + r); g.lineTo(x + r * 0.92, y - r * 0.72); g.lineTo(x - r * 0.92, y - r * 0.72);
+      g.closePath();
+      break;
+    case "hexagon":
+    case "pentagon": {
+      const sides = shape === "hexagon" ? 6 : 5;
+      const offset = shape === "hexagon" ? 0 : -Math.PI / 2;
+      for (let s = 0; s < sides; s++) {
+        const a = offset + (s / sides) * Math.PI * 2;
+        const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+        if (s) g.lineTo(px, py); else g.moveTo(px, py);
       }
-      return `<b>${seg}</b>`;
-    })
-    .join(" ");
+      g.closePath();
+      break;
+    }
+    case "capsule": {
+      const w = r * 1.5, h = r * 0.95;
+      if (g.roundRect) g.roundRect(x - w, y - h, w * 2, h * 2, h);
+      else g.rect(x - w, y - h, w * 2, h * 2);
+      break;
+    }
+    default: g.arc(x, y, r, 0, Math.PI * 2);
+  }
 }
 
-function renderResults(data) {
-  $("results").innerHTML = data.results
-    .map((r) => {
-      const move = moveLabel(r.semantic_rank, r.final_rank);
-      const share = r.evidence.anchor_runs_touching;
-      const denied = r.evidence.denied_edges;
-      return `
-      <article class="card">
-        <header>
-          <span class="rank">${r.final_rank}</span>
-          <span class="label">${r.label}</span>
-          <span class="move ${move.cls}">${move.text}</span>
-        </header>
-        <div class="scores">
-          <div>
-            <div class="k">semantic</div><div class="v">${fmt(r.semantic_score)}</div>
-            <div class="bar"><i style="width:${r.semantic_score * 100}%"></i></div>
-          </div>
-          <div>
-            <div class="k">structural (graph-core)</div><div class="v">${fmt(r.structural_score)}</div>
-            <div class="bar"><i style="width:${r.structural_score * 100}%"></i></div>
-          </div>
-          <div>
-            <div class="k">final</div><div class="v">${fmt(r.final_score)}</div>
-            <div class="bar"><i style="width:${r.final_score * 100}%"></i></div>
-          </div>
-        </div>
-        <div class="path">${pathHtml(r.evidence_path, r.evidence.relation)}</div>
-        <div class="ev">
-          touched by ${r.evidence.runs_touching} runs &middot;
-          ${share} of the anchor's (${fmt(r.evidence.anchor_run_share_pct, 0)}%) &middot;
-          ${r.evidence.allowed_edges} allowed / ${denied} denied edge${denied === 1 ? "" : "s"}
-          ${r.evidence.action ? `&middot; action ${r.evidence.action}` : ""}
-        </div>
-      </article>`;
-    })
-    .join("");
+const DIM = 0.11;
+function nodeAlpha(i) {
+  if (!inView(i)) return 0;
+  if (path) return path.nodes.indexOf(i) >= 0 ? 1 : DIM;
+  if (selected !== null) return i === selected || neighbours.has(i) ? 1 : DIM;
+  return 1;
+}
 
-  $("semantic-table").innerHTML =
-    `<tr><th>semantic rank</th><th>resource</th><th>cosine</th><th>final rank</th></tr>` +
-    data.semantic_order
-      .map(
-        (s) =>
-          `<tr><td>${s.semantic_rank}</td><td class="mono">${s.label}</td>` +
-          `<td>${fmt(s.semantic_cosine)}</td><td>${s.final_rank}</td></tr>`,
-      )
-      .join("");
+function drawSnapshotEdges() {
+  const focusing = selected !== null || path !== null;
+  for (const cls of ["structure", "allowed", "denied"]) {
+    if (!classOn[cls]) continue;
+    if (cls === "allowed" && ticks < TOTAL_TICKS) continue;  // keep settling smooth
+    const dimmed = [], lit = [];
+    for (let e = 0; e < EDGES.length; e++) {
+      if (edgeClass(EDGES[e]) !== cls) continue;
+      const source = EDGES[e][0], target = EDGES[e][1];
+      if (!inView(source) || !inView(target)) continue;
+      const focused = !focusing || (!path && (source === selected || target === selected));
+      (focused ? lit : dimmed).push(e);
+    }
+    const stroke = cls === "denied" ? CSS.deny : cls === "allowed" ? CSS.edgeAllowed : CSS.edge;
+    for (const [list, alpha] of [[dimmed, DIM], [lit, 1]]) {
+      if (!list.length) continue;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = cls === "denied" ? 1.6 : 1;
+      ctx.beginPath();
+      for (const e of list) {
+        ctx.moveTo(sx(PX(EDGES[e][0])), sy(PY(EDGES[e][0])));
+        ctx.lineTo(sx(PX(EDGES[e][1])), sy(PY(EDGES[e][1])));
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+// In the answer view there are a handful of edges and each one is part of the
+// argument, so every one is drawn thick and labelled with the decision policy
+// made on it.
+function drawAnswerEdges() {
+  ctx.save();
+  ctx.font = "500 11px " + MONO;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  answer.edges.forEach((edge) => {
+    const lit = !path || (path.nodes.indexOf(edge.source) >= 0 && path.nodes.indexOf(edge.target) >= 0);
+    const x1 = sx(PX(edge.source)), y1 = sy(PY(edge.source));
+    const x2 = sx(PX(edge.target)), y2 = sy(PY(edge.target));
+    ctx.globalAlpha = lit ? 1 : DIM;
+    ctx.strokeStyle = edge.cls === "denied" ? CSS.deny : edge.cls === "allowed" ? CSS.allow : CSS.edge;
+    ctx.lineWidth = edge.cls === "structure" ? 1.4 : 2.2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    if (scale < 0.42) return;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const w = ctx.measureText(edge.label).width;
+    ctx.fillStyle = CSS.stage;
+    ctx.globalAlpha = lit ? 0.95 : DIM;
+    ctx.fillRect(mx - w / 2 - 4, my - 8, w + 8, 16);
+    ctx.globalAlpha = lit ? 1 : DIM;
+    ctx.fillStyle = edge.cls === "denied" ? CSS.deny : edge.cls === "allowed" ? CSS.allow : CSS.muted;
+    ctx.fillText(edge.label, mx, my);
+  });
+  ctx.restore();
+}
+
+function drawNodes() {
+  for (let i = 0; i < NODES.length; i++) {
+    const alpha = nodeAlpha(i);
+    if (!alpha) continue;
+    const shape = styleOf(NODES[i].entity_type)[1];
+    const x = sx(PX(i)), y = sy(PY(i));
+    const r = nodeRadius(i) * (MODE === "answer" ? Math.min(1.4, Math.max(0.6, scale)) : 1);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    shapePath(ctx, shape, x, y, r);
+    ctx.fillStyle = colorOf(NODES[i].entity_type);
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = CSS.stage;
+    ctx.stroke();
+    const onPath = path && path.nodes.indexOf(i) >= 0;
+    if (i === selected || onPath) {
+      shapePath(ctx, shape, x, y, r + 3.5);
+      ctx.lineWidth = 1.8;
+      ctx.strokeStyle = onPath ? CSS.deny : CSS.text;
+      ctx.stroke();
+    }
+    // The rank a result came back with, on the node itself.
+    const rank = MODE === "answer" ? answer.ranks[i] : undefined;
+    if (rank !== undefined) {
+      const bx = x - r - 13, by = y;
+      ctx.beginPath();
+      ctx.arc(bx, by, 9, 0, Math.PI * 2);
+      ctx.fillStyle = CSS.accent;
+      ctx.fill();
+      ctx.fillStyle = "#0b0d11";
+      ctx.font = "700 11px " + SANS;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(rank), bx, by + 0.5);
+    }
+    ctx.restore();
+  }
+}
+
+function drawLabels() {
+  // Whatever is in play first, then the small types. A label that would land
+  // on one already drawn is dropped rather than overprinted.
+  ctx.save();
+  ctx.font = "500 11px " + SANS;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const wanted = [];
+  for (let i = 0; i < NODES.length; i++) {
+    if (nodeAlpha(i) < 1) continue;
+    const inPlay = i === selected || i === hovered || (path && path.nodes.indexOf(i) >= 0);
+    if (MODE === "answer") wanted.push([i, inPlay, inPlay ? 2 : 1]);
+    else if (inPlay) wanted.push([i, true, 2]);
+    else if (alwaysLabel.has(NODES[i].entity_type) && scale > 0.45) wanted.push([i, false, 1]);
+    else if (scale > 1.9) wanted.push([i, false, 0]);
+  }
+  wanted.sort((a, b) => b[2] - a[2] || NODES[b[0]].deg - NODES[a[0]].deg);
+  const taken = [];
+  for (const [i, inPlay] of wanted) {
+    const x = sx(PX(i));
+    const y = sy(PY(i)) - nodeRadius(i) - 5;
+    if (x < -120 || x > cw + 120 || y < -20 || y > ch + 20) continue;
+    const text = NODES[i].label;
+    const w = ctx.measureText(text).width;
+    const box = [x - w / 2 - 3, y - 12, x + w / 2 + 3, y + 2];
+    let clash = false;
+    for (const t of taken) {
+      if (box[0] < t[2] && box[2] > t[0] && box[1] < t[3] && box[3] > t[1]) { clash = true; break; }
+    }
+    if (clash && !inPlay) continue;
+    taken.push(box);
+    ctx.globalAlpha = 0.92;
+    ctx.fillStyle = CSS.stage;
+    ctx.fillRect(box[0], box[1], box[2] - box[0], box[3] - box[1]);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = inPlay ? CSS.text : CSS.muted;
+    ctx.fillText(text, x, y);
+  }
+  ctx.restore();
+}
+
+function drawPath() {
+  if (!path) return;
+  ctx.save();
+  ctx.strokeStyle = path.relation === DENIED ? CSS.deny : CSS.accent;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  path.nodes.forEach((i, n) =>
+    (n ? ctx.lineTo(sx(PX(i)), sy(PY(i))) : ctx.moveTo(sx(PX(i)), sy(PY(i)))));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function draw() {
+  if (!NODES.length) return;
+  ctx.clearRect(0, 0, cw, ch);
+  if (MODE === "answer") {
+    if (!answer) return;
+    drawAnswerEdges();
+  } else {
+    drawSnapshotEdges();
+    drawPath();
+  }
+  drawNodes();
+  drawLabels();
+}
+
+function loop() {
+  if (ticks < TOTAL_TICKS) {
+    for (let n = 0; n < 6 && ticks < TOTAL_TICKS; n++) tick();
+    if (ticks >= TOTAL_TICKS) {
+      fit();
+      $("hint").textContent = "drag to pan · scroll to zoom · click a node";
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+}
+
+// ── pointer ─────────────────────────────────────────────────────────────────
+function pick(px, py) {
+  let best = null, bestD = 22 * 22;
+  for (let i = 0; i < NODES.length; i++) {
+    if (!nodeAlpha(i)) continue;
+    const dx = px - sx(PX(i)), dy = py - sy(PY(i));
+    const d = dx * dx + dy * dy;
+    const rr = Math.max(9, nodeRadius(i) + 4);
+    if (d < rr * rr && d < bestD) { best = i; bestD = d; }
+  }
+  return best;
+}
+
+let dragging = null, panning = null, moved = false;
+
+canvas.addEventListener("pointerdown", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+  const hit = pick(px, py);
+  moved = false;
+  canvas.setPointerCapture(ev.pointerId);
+  canvas.classList.add("grabbing");
+  // Answer-view positions carry rank, so they are not draggable.
+  if (hit !== null && MODE === "snapshot") {
+    dragging = { i: hit, dx: px - sx(X[hit]), dy: py - sy(Y[hit]) };
+  } else if (hit !== null) {
+    dragging = { i: hit, dx: 0, dy: 0, fixed: true };
+  } else {
+    panning = { x: px - ox, y: py - oy };
+  }
+});
+
+canvas.addEventListener("pointermove", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+  if (dragging) {
+    if (dragging.fixed) return;
+    moved = true;
+    X[dragging.i] = (px - dragging.dx - ox) / scale;
+    Y[dragging.i] = (py - dragging.dy - oy) / scale;
+    pinned[dragging.i] = 1;
+    draw();
+    return;
+  }
+  if (panning) {
+    moved = true;
+    ox = px - panning.x;
+    oy = py - panning.y;
+    draw();
+    return;
+  }
+  const hit = pick(px, py);
+  if (hit !== hovered) { hovered = hit; draw(); }
+  const tip = $("tip");
+  if (hit === null) { tip.style.display = "none"; return; }
+  const node = NODES[hit];
+  tip.innerHTML = "";
+  tip.appendChild(el("div", "t", styleOf(node.entity_type)[2]));
+  tip.appendChild(el("div", "l", node.label));
+  tip.appendChild(el("div", "m",
+    `${node.deg} edges · ${node.allowed} allowed · ${node.denied} denied`));
+  tip.style.display = "block";
+  tip.style.left = Math.min(cw - tip.offsetWidth - 8, Math.max(8, px + 14)) + "px";
+  tip.style.top = Math.min(ch - tip.offsetHeight - 8, Math.max(8, py + 14)) + "px";
+});
+
+function endPointer() {
+  canvas.classList.remove("grabbing");
+  if (dragging && !moved) setSelected(dragging.i, false);
+  else if (panning && !moved) { setPath(null); setSelected(null, false); }
+  dragging = panning = null;
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("pointerleave", () => {
+  $("tip").style.display = "none";
+  hovered = null;
+  draw();
+});
+
+canvas.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+  const next = Math.max(0.15, Math.min(6, scale * Math.exp(-ev.deltaY * 0.0015)));
+  ox = px - ((px - ox) / scale) * next;
+  oy = py - ((py - oy) / scale) * next;
+  scale = next;
+  draw();
+}, { passive: false });
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") { setPath(null); setSelected(null, false); }
+});
+
+$("fit").addEventListener("click", () => { fit(); draw(); });
+$("relayout").addEventListener("click", () => { seedPositions(); loop(); });
+$("clear").addEventListener("click", () => {
+  setPath(null);
+  setSelected(null, false);
+  document.querySelectorAll(".card").forEach((c) => c.setAttribute("aria-pressed", "false"));
+});
+
+// ── legend ──────────────────────────────────────────────────────────────────
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function glyph(type) {
+  const slot = styleOf(type)[0], shape = styleOf(type)[1];
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 14 14");
+  svg.setAttribute("width", "13");
+  svg.setAttribute("height", "13");
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.flex = "none";
+  const ring = (sides, offset) => Array.from({ length: sides }, (unused, i) => {
+    const a = offset + (i / sides) * Math.PI * 2;
+    return `${(7 + Math.cos(a) * 5.6).toFixed(2)},${(7 + Math.sin(a) * 5.6).toFixed(2)}`;
+  }).join(" ");
+  let mark;
+  if (shape === "square" || shape === "rsquare") {
+    mark = document.createElementNS(SVG_NS, "rect");
+    mark.setAttribute("x", "1.6"); mark.setAttribute("y", "1.6");
+    mark.setAttribute("width", "10.8"); mark.setAttribute("height", "10.8");
+    mark.setAttribute("rx", shape === "rsquare" ? "2.4" : "0.5");
+  } else if (shape === "capsule") {
+    mark = document.createElementNS(SVG_NS, "rect");
+    mark.setAttribute("x", "0.6"); mark.setAttribute("y", "3.6");
+    mark.setAttribute("width", "12.8"); mark.setAttribute("height", "6.8");
+    mark.setAttribute("rx", "3.4");
+  } else if (shape === "circle") {
+    mark = document.createElementNS(SVG_NS, "circle");
+    mark.setAttribute("cx", "7"); mark.setAttribute("cy", "7"); mark.setAttribute("r", "5.4");
+  } else {
+    mark = document.createElementNS(SVG_NS, "polygon");
+    mark.setAttribute("points", {
+      diamond: "7,1.2 12.8,7 7,12.8 1.2,7",
+      triangle: "7,1.2 13,12.2 1,12.2",
+      tridown: "7,12.8 13,1.8 1,1.8",
+      hexagon: ring(6, 0),
+      pentagon: ring(5, -Math.PI / 2),
+    }[shape]);
+  }
+  mark.setAttribute("fill", `var(${slot})`);
+  svg.appendChild(mark);
+  return svg;
+}
+
+function edgeSwatch(slot, width) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 10");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "10");
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.flex = "none";
+  const line = document.createElementNS(SVG_NS, "line");
+  line.setAttribute("x1", "0"); line.setAttribute("y1", "5");
+  line.setAttribute("x2", "16"); line.setAttribute("y2", "5");
+  line.setAttribute("stroke", `var(${slot})`);
+  line.setAttribute("stroke-width", String(width));
+  svg.appendChild(line);
+  return svg;
+}
+
+function buildLegend() {
+  const body = $("legend-body");
+  body.innerHTML = "";
+  typesPresent.forEach((t) => {
+    const row = el("button", "row");
+    row.type = "button";
+    row.setAttribute("aria-pressed", "true");
+    row.appendChild(glyph(t.type));
+    row.appendChild(el("span", null, styleOf(t.type)[2]));
+    row.appendChild(el("span", "count", String(t.count)));
+    row.addEventListener("click", () => {
+      const on = row.getAttribute("aria-pressed") === "true";
+      row.setAttribute("aria-pressed", on ? "false" : "true");
+      if (on) typeOn.delete(t.type); else typeOn.add(t.type);
+      draw();
+    });
+    body.appendChild(row);
+  });
+
+  const counts = { structure: 0, allowed: 0, denied: 0 };
+  EDGES.forEach((edge) => { counts[edgeClass(edge)]++; });
+  body.appendChild(el("div", "sep", "Edges"));
+  [
+    ["denied", "Denied access", "--deny", 2.5],
+    ["allowed", "Allowed access", "--edge-allowed", 1.5],
+    ["structure", "Structure", "--edge", 1.5],
+  ].forEach(([cls, name, slot, width]) => {
+    const row = el("button", "row");
+    row.type = "button";
+    row.setAttribute("aria-pressed", String(classOn[cls]));
+    row.appendChild(edgeSwatch(slot, width));
+    row.appendChild(el("span", null, name));
+    row.appendChild(el("span", "count", counts[cls].toLocaleString()));
+    row.addEventListener("click", () => {
+      classOn[cls] = !classOn[cls];
+      row.setAttribute("aria-pressed", String(classOn[cls]));
+      draw();
+    });
+    body.appendChild(row);
+  });
+
+  const share = EDGES.length ? Math.round((counts.allowed / EDGES.length) * 100) : 0;
+  body.appendChild(el("div", "sep", "note"));
+  body.appendChild(el("div", "legend-note",
+    `Allowed-access edges (${counts.allowed.toLocaleString()}) are off by default — ` +
+    `they are ${share}% of the graph and hide everything else. Turn them on to see ` +
+    "the volume the refusals sit inside."));
+  $("legend").hidden = false;
+}
+
+$("legend-toggle").addEventListener("click", () => {
+  const legend = $("legend");
+  const closed = legend.classList.toggle("closed");
+  $("legend-toggle").textContent = closed ? "show" : "hide";
+  $("legend-toggle").setAttribute("aria-expanded", String(!closed));
+});
+
+function renderNodeDetails() {
+  const box = $("node-details");
+  if (selected === null) {
+    box.className = "overlay details";
+    box.innerHTML = "";
+    return;
+  }
+  const node = NODES[selected];
+  box.className = "overlay details on";
+  box.innerHTML = "";
+  const close = el("button", "ghost close", "close");
+  close.type = "button";
+  close.addEventListener("click", () => setSelected(null, false));
+  box.appendChild(close);
+  const head = el("h3");
+  head.appendChild(glyph(node.entity_type));
+  head.appendChild(document.createTextNode(node.label));
+  box.appendChild(head);
+
+  const list = document.createElement("dl");
+  const add = (key, value) => {
+    list.appendChild(el("dt", null, key));
+    list.appendChild(el("dd", null, value));
+  };
+  add("type", styleOf(node.entity_type)[2]);
+  add("external id", node.id);
+  add("edges", String(node.deg));
+  if (node.allowed || node.denied) add("access", `${node.allowed} allowed · ${node.denied} denied`);
+  box.appendChild(list);
+
+  const seen = new Map();
+  adjacency[selected].forEach((e) => {
+    const other = EDGES[e][0] === selected ? EDGES[e][1] : EDGES[e][0];
+    const relation = RELATIONS[EDGES[e][2]];
+    const key = other + "|" + relation;
+    if (!seen.has(key)) seen.set(key, { other, relation, cls: edgeClass(EDGES[e]) });
+  });
+  const neighbourList = [...seen.values()].sort((a, b) =>
+    (b.cls === "denied") - (a.cls === "denied") ||
+    NODES[a.other].entity_type.localeCompare(NODES[b.other].entity_type));
+  const nbrs = el("div", "nbrs");
+  nbrs.appendChild(el("div", "k", "connected to"));
+  neighbourList.slice(0, 10).forEach((item) => {
+    const button = el("button", "nbr");
+    button.type = "button";
+    button.appendChild(glyph(NODES[item.other].entity_type));
+    button.appendChild(el("span", null, NODES[item.other].label));
+    const relation = el("span", "rel", item.relation);
+    if (item.cls === "denied") relation.style.color = "var(--deny)";
+    button.appendChild(relation);
+    button.addEventListener("click", () => { setPath(null); setSelected(item.other, false); });
+    nbrs.appendChild(button);
+  });
+  if (neighbourList.length > 10) {
+    nbrs.appendChild(el("div", "k", `+ ${neighbourList.length - 10} more`));
+  }
+  box.appendChild(nbrs);
+
+  if (node.entity_type === "agent_profile") {
+    const pick = el("button", "ghost ask-profile",
+      node.id === anchorId ? "asking about this profile" : "ask about this profile");
+    pick.type = "button";
+    pick.disabled = node.id === anchorId;
+    pick.addEventListener("click", () => {
+      anchorId = node.id;
+      $("anchor").value = node.id;
+      renderAnchorRuns();
+      renderNodeDetails();
+      $("q").focus();
+    });
+    box.appendChild(pick);
+  }
+}
+
+// ── the answer, as its own graph ────────────────────────────────────────────
+// Every result the model returned, drawn together: the anchor on the left, the
+// run each answer went through in the middle, the approved resource on the
+// right, ordered top to bottom by the rank graph-core gave it. One picture of
+// the whole answer rather than one path at a time.
+function buildAnswerView(data) {
+  const anchorIndex = INDEX.get(data.anchor.external_id);
+  const rows = data.results.map((result) => {
+    const p = result.evidence_path || [];
+    return {
+      result,
+      resource: INDEX.get(result.external_id),
+      run: p.length >= 4 ? INDEX.get(p[1]) : undefined,
+    };
+  }).filter((row) => row.resource !== undefined);
+  if (anchorIndex === undefined || !rows.length) return null;
+
+  const pos = {}, ranks = {}, set = new Set(), edges = [];
+  const top = 150, bottom = H - 150;
+  const step = rows.length > 1 ? (bottom - top) / (rows.length - 1) : 0;
+  const xAnchor = 210, xRun = 780, xResource = 1330;
+
+  set.add(anchorIndex);
+  pos[anchorIndex] = { x: xAnchor, y: H / 2 };
+
+  // A run can carry more than one result; it is drawn once, between the rows
+  // it serves, and both its edges point at it.
+  const runRows = new Map();
+  rows.forEach((row, i) => {
+    if (row.run === undefined) return;
+    if (!runRows.has(row.run)) runRows.set(row.run, []);
+    runRows.get(row.run).push(i);
+  });
+  runRows.forEach((indices, run) => {
+    const y = indices.reduce((sum, i) => sum + (top + i * step), 0) / indices.length;
+    set.add(run);
+    pos[run] = { x: xRun, y };
+    edges.push({ source: anchorIndex, target: run, cls: "structure", label: "initiated" });
+  });
+
+  rows.forEach((row, i) => {
+    const y = top + i * step;
+    set.add(row.resource);
+    pos[row.resource] = { x: xResource, y };
+    ranks[row.resource] = row.result.final_rank;
+    const evidence = row.result.evidence || {};
+    if (row.run !== undefined) {
+      edges.push({
+        source: row.run,
+        target: row.resource,
+        cls: evidence.relation === DENIED ? "denied" : "allowed",
+        label: (evidence.relation || "access") + (evidence.action ? " · " + evidence.action : ""),
+      });
+    } else {
+      // No resolvable path: say so on the edge rather than drawing a run that
+      // was not in the answer.
+      edges.push({
+        source: anchorIndex, target: row.resource, cls: "structure",
+        label: "no path in this snapshot",
+      });
+    }
+  });
+
+  return { set, pos, ranks, edges, anchor: anchorIndex };
+}
+
+function setMode(next) {
+  if (next === "answer" && !answer) return;
+  MODE = next;
+  $("view-answer").setAttribute("aria-pressed", String(next === "answer"));
+  $("view-snapshot").setAttribute("aria-pressed", String(next === "snapshot"));
+  $("relayout").hidden = next === "answer";
+  $("hint").textContent = next === "answer"
+    ? "the answer: anchor → run → resource, ranked top to bottom"
+    : "drag to pan · scroll to zoom · click a node";
+  fit();
+  draw();
+}
+
+$("view-answer").addEventListener("click", () => setMode("answer"));
+$("view-snapshot").addEventListener("click", () => setMode("snapshot"));
+
+function pathOf(result) {
+  const p = result.evidence_path;
+  if (!p || p.length < 4) return null;
+  const anchor = INDEX.get(p[0]), run = INDEX.get(p[1]), resource = INDEX.get(p[3]);
+  if (anchor === undefined || run === undefined || resource === undefined) return null;
+  return { nodes: [anchor, run, resource], relation: result.evidence.relation };
+}
+
+// The three-way call, computed from the response rather than asserted: what
+// moved is the only thing a result on this page is entitled to claim.
+function verdictOf(data) {
+  const final = data.results.map((r) => r.external_id);
+  const semantic = data.semantic_order
+    .slice()
+    .sort((a, b) => a.semantic_rank - b.semantic_rank)
+    .map((s) => s.external_id)
+    .slice(0, final.length);
+  const scores = data.results.map((r) => r.final_score);
+  const spread = scores.length > 1 ? Math.max(...scores) - Math.min(...scores) : null;
+  const caution = spread !== null && spread <= SPREAD_FLOOR
+    ? `The ${scores.length} final scores span ${spread.toFixed(4)} — a hundredth or less. ` +
+      "Their relative order is not robust and would flip under a different seed or a " +
+      `re-train. What survives is membership: which resources made the ${scores.length}.`
+    : null;
+
+  if (semantic.length && final.every((id, i) => id === semantic[i])) {
+    return {
+      kind: "unchanged",
+      headline: "Order unchanged",
+      detail: "The reranker returned the retriever's own order. A valid outcome and " +
+              "not a failure, but it is not evidence that structure helped — say so " +
+              "plainly.",
+      caution,
+    };
+  }
+  if (semantic.length && final[0] === semantic[0]) {
+    const promoted = final.slice(1).filter((id) => semantic.indexOf(id) < 0).length;
+    return {
+      kind: "partial",
+      headline: "Partial — the top slot held",
+      detail: `The retriever's first pick survived, and ${promoted} resource` +
+              `${promoted === 1 ? "" : "s"} it ranked outside the top ${final.length} ` +
+              `${promoted === 1 ? "was" : "were"} promoted into it. Structure changed ` +
+              "which resources are on screen; the winner is not part of that claim.",
+      caution,
+    };
+  }
+  const risers = data.results.filter((r) => r.semantic_rank > r.final_rank).length;
+  return {
+    kind: "changed",
+    headline: "Order changed",
+    detail: `${risers} of ${data.results.length} results rose against the semantic ` +
+            "ranking, including the top slot. Structure outranked semantics — walk the " +
+            "evidence path for each riser.",
+    caution,
+  };
+}
+
+function slopeChart(data) {
+  const order = data.semantic_order.slice().sort((a, b) => a.semantic_rank - b.semantic_rank);
+  const finalists = new Set(data.results.map((r) => r.external_id));
+  const rowH = 16, top = 20, width = 380;
+  const height = top + order.length * rowH + 12;
+  const left = 138, right = width - 138;
+  const mk = (tag, attrs) => {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const key in attrs) node.setAttribute(key, attrs[key]);
+    return node;
+  };
+  const svg = mk("svg", {
+    class: "slope",
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": "Semantic rank compared with the graph-core-approved rank, per candidate",
+  });
+  const head = (x, text, anchor) => {
+    const label = mk("text", { x, y: 9, "text-anchor": anchor });
+    label.textContent = text;
+    svg.appendChild(label);
+  };
+  head(left, "semantic rank", "end");
+  head(right, "graph-core rank", "start");
+
+  const yOf = (rank) => top + (rank - 1) * rowH + rowH / 2;
+  order.forEach((candidate) => {
+    const isFinal = finalists.has(candidate.external_id);
+    const y1 = yOf(candidate.semantic_rank), y2 = yOf(candidate.final_rank);
+    const group = mk("g", { class: "hit" });
+    group.appendChild(mk("path", {
+      d: `M ${left + 4} ${y1} C ${left + 44} ${y1}, ${right - 44} ${y2}, ${right - 4} ${y2}`,
+      fill: "none",
+      stroke: isFinal ? "var(--accent)" : "var(--muted)",
+      "stroke-opacity": isFinal ? 1 : 0.35,
+      "stroke-width": isFinal ? 2 : 1,
+    }));
+    [[left + 4, y1], [right - 4, y2]].forEach(([cx, cy]) => {
+      group.appendChild(mk("circle", {
+        cx, cy, r: isFinal ? 3 : 2,
+        fill: isFinal ? "var(--accent)" : "var(--muted)",
+      }));
+    });
+    const title = mk("title", {});
+    title.textContent = `${candidate.label}: semantic rank ${candidate.semantic_rank} ` +
+                        `→ graph-core rank ${candidate.final_rank}`;
+    group.appendChild(title);
+    group.addEventListener("click", () => {
+      const node = INDEX.get(candidate.external_id);
+      if (node === undefined) return;
+      const result = data.results.find((r) => r.external_id === candidate.external_id);
+      reveal(node);
+      setSelected(node, false);
+      setPath(result ? pathOf(result) : null);
+      if (!result) setSelected(node, true);
+    });
+    svg.appendChild(group);
+
+    const leftLabel = mk("text", {
+      x: left - 6, y: y1 + 3, "text-anchor": "end", class: isFinal ? "lab" : "",
+    });
+    leftLabel.textContent = `${candidate.semantic_rank}. ${candidate.label}`;
+    svg.appendChild(leftLabel);
+    if (isFinal) {
+      const rightLabel = mk("text", { x: right + 6, y: y2 + 3, class: "lab" });
+      rightLabel.textContent = `${candidate.final_rank}. ${candidate.label}`;
+      svg.appendChild(rightLabel);
+    }
+  });
+  return svg;
+}
+
+function resultCard(result, container) {
+  const card = el("button", "card");
+  card.type = "button";
+  card.setAttribute("aria-pressed", "false");
+
+  const header = el("header");
+  header.appendChild(el("span", "rank", String(result.final_rank)));
+  header.appendChild(el("span", "label", result.label));
+  header.appendChild(el("span", "final", fmt(result.final_score)));
+  card.appendChild(header);
+
+  const delta = result.semantic_rank - result.final_rank;
+  const move = el("div", "move");
+  move.appendChild(document.createTextNode(
+    `semantic rank ${result.semantic_rank} → ${result.final_rank} `));
+  move.appendChild(el("span", delta > 0 ? "up" : "",
+    delta > 0 ? `(up ${delta})` : delta < 0 ? `(down ${-delta})` : "(unchanged)"));
+  card.appendChild(move);
+
+  card.appendChild(el("div", "scores",
+    `semantic ${fmt(result.semantic_score)} · structural ${fmt(result.structural_score)}`));
+
+  const evidence = result.evidence;
+  const p = result.evidence_path;
+  if (p && p.length >= 4) {
+    const row = el("div", "path");
+    const anchorNode = INDEX.get(p[0]), runNode = INDEX.get(p[1]);
+    if (anchorNode !== undefined) row.appendChild(glyph(NODES[anchorNode].entity_type));
+    row.appendChild(el("span", "seg", anchorNode !== undefined ? NODES[anchorNode].label : p[0]));
+    row.appendChild(el("span", null, "→"));
+    if (runNode !== undefined) row.appendChild(glyph(NODES[runNode].entity_type));
+    row.appendChild(el("span", "seg", runNode !== undefined ? NODES[runNode].label : p[1]));
+    row.appendChild(el("span", null, "→"));
+    row.appendChild(el("span", "rel " + (evidence.relation === DENIED ? "denied" : "allowed"),
+      evidence.relation + (evidence.action ? " · " + evidence.action : "")));
+    card.appendChild(row);
+  }
+
+  card.appendChild(el("div", "ev",
+    `touched by ${evidence.runs_touching} run${evidence.runs_touching === 1 ? "" : "s"} · ` +
+    `${evidence.anchor_runs_touching} of the anchor's own · ` +
+    `${evidence.allowed_edges} allowed / ${evidence.denied_edges} denied edge` +
+    `${evidence.denied_edges === 1 ? "" : "s"}`));
+
+  card.addEventListener("click", () => {
+    const on = card.getAttribute("aria-pressed") === "true";
+    container.querySelectorAll(".card").forEach((c) => c.setAttribute("aria-pressed", "false"));
+    if (on) { setPath(null); setSelected(null, false); return; }
+    card.setAttribute("aria-pressed", "true");
+    const node = INDEX.get(result.external_id);
+    const evidencePath = pathOf(result);
+    if (node !== undefined) reveal(node);
+    if (node !== undefined) setSelected(node, false);
+    setPath(evidencePath);
+    if (!evidencePath && node !== undefined) setSelected(node, true);
+  });
+  return card;
+}
+
+function renderAnswer(data) {
+  answer = buildAnswerView(data);
+  $("views").hidden = !answer;
+  if (answer) setMode("answer");
+
+  const panel = $("answer");
+  panel.innerHTML = "";
+
+  const claim = el("div");
+  claim.appendChild(el("span", "badge" + (data.graph_core_applied ? "" : " off"),
+    `graph_core_applied: ${data.graph_core_applied}`));
+  claim.appendChild(el("span", "note",
+    ` ${fmt(data.graph_core_latency_ms, 2)} ms in graph-core of ` +
+    `${fmt(data.total_latency_ms, 2)} ms total, over ${data.candidate_k} candidates`));
+  panel.appendChild(claim);
+
+  const verdict = verdictOf(data);
+  const box = el("div", "verdict " + verdict.kind);
+  box.appendChild(el("h3", null, verdict.headline));
+  box.appendChild(el("p", null, verdict.detail));
+  if (verdict.caution) {
+    const caution = el("div", "caution");
+    caution.appendChild(el("b", null, "Check the separation. "));
+    caution.appendChild(document.createTextNode(verdict.caution));
+    box.appendChild(caution);
+  }
+  panel.appendChild(box);
+
+  const chart = el("div");
+  chart.style.margin = ".9rem 0";
+  chart.appendChild(el("div", "k", "rank movement"));
+  chart.appendChild(slopeChart(data));
+  panel.appendChild(chart);
+
+  panel.appendChild(el("div", "k", "the graph-core-approved order"));
+  const cards = el("div");
+  cards.style.marginTop = ".5rem";
+  data.results.forEach((result) => cards.appendChild(resultCard(result, cards)));
+  panel.appendChild(cards);
+  panel.appendChild(el("p", "note",
+    "All five are on the canvas already — the anchor, the run each answer went " +
+    "through, and the resource, ranked top to bottom. Click a result to single " +
+    "it out, or switch to the whole snapshot to see where it sits."));
+
+  const table = $("semantic-table");
+  table.innerHTML = "";
+  const headRow = document.createElement("tr");
+  ["semantic rank", "resource", "cosine", "graph-core rank"].forEach((name, i) => {
+    headRow.appendChild(el("th", i >= 2 ? "num" : null, name));
+  });
+  table.appendChild(headRow);
+  data.semantic_order
+    .slice()
+    .sort((a, b) => a.semantic_rank - b.semantic_rank)
+    .forEach((entry) => {
+      const row = document.createElement("tr");
+      row.appendChild(el("td", "num", String(entry.semantic_rank)));
+      row.appendChild(el("td", "mono", entry.label));
+      row.appendChild(el("td", "num", fmt(entry.semantic_cosine)));
+      row.appendChild(el("td", "num", String(entry.final_rank)));
+      table.appendChild(row);
+    });
   $("comparison").hidden = false;
 
-  $("status").innerHTML =
-    `<span class="badge">graph_core_applied: ${data.graph_core_applied}</span> ` +
-    `model ${data.model_version} &middot; mapping ${data.mapping_hash.slice(0, 12)} &middot; ` +
-    `snapshot ${data.snapshot_revision} &middot; ` +
-    `graph-core rerank ${fmt(data.graph_core_latency_ms, 2)} ms of ` +
-    `${fmt(data.total_latency_ms, 2)} ms total, over ${data.candidate_k} candidates`;
+  $("status").textContent =
+    `model ${data.model_version} · mapping ${data.mapping_hash.slice(0, 12)} · ` +
+    `snapshot ${data.snapshot_revision}`;
 }
 
-async function run() {
+// ── identity ────────────────────────────────────────────────────────────────
+// The activation weights are f32, so they arrive as 0.6000000238418579. Print
+// the number that was configured, not the float noise around it.
+const weight = (w) => Number(w.toFixed(3)).toString();
+
+function renderIdentity(m) {
+  const box = $("identity");
+  box.innerHTML = "";
+  [
+    ["workspace", m.workspace_id],
+    ["snapshot revision", m.snapshot_revision],
+    ["snapshot sha256", m.snapshot_sha256.slice(0, 16) + "…"],
+    ["model version", m.model_version],
+    ["mapping hash", m.mapping_hash],
+    ["embedding model", m.embedding_model],
+    ["graph", `${m.entities} entities / ${m.relationships} relationships`],
+    ["weights", `semantic ${weight(m.weights.semantic)} · structural ${weight(m.weights.structural)}`],
+    ["graph-core commit", m.commits.graph_core.slice(0, 12)],
+    ["sandbox commit", m.commits.sandbox.slice(0, 12)],
+  ].forEach(([key, value]) => {
+    const cell = el("div");
+    cell.appendChild(el("div", "k", key));
+    cell.appendChild(el("div", "v", String(value)));
+    box.appendChild(cell);
+  });
+}
+
+// ── asking ──────────────────────────────────────────────────────────────────
+function fail(message) {
+  const box = $("error");
+  box.hidden = false;
+  box.textContent = message;
+}
+
+async function ask(question) {
   const button = $("run");
   button.disabled = true;
   $("error").hidden = true;
@@ -222,7 +1523,7 @@ async function run() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         workspace_id: manifest.workspace_id,
-        query: FROZEN_QUERY,
+        query: question,
         anchor_external_id: anchorId,
         candidate_k: CANDIDATE_K,
         top_k: TOP_K,
@@ -230,24 +1531,103 @@ async function run() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    renderResults(data);
+    path = null;
+    setSelected(null, false);
+    renderAnswer(data);
   } catch (e) {
     $("status").textContent = "";
-    $("results").innerHTML = "";
     $("comparison").hidden = true;
-    $("error").hidden = false;
-    $("error").textContent =
-      "The query failed, and there is no answer without graph-core:\n\n" + e.message;
+    fail("The query failed, and there is no answer without graph-core:\n\n" + e.message);
   } finally {
     button.disabled = false;
   }
 }
 
-$("run").addEventListener("click", run);
-loadManifest().catch((e) => {
-  $("error").hidden = false;
-  $("error").textContent = "Could not read the loaded pack: " + e.message;
+$("ask").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const question = $("q").value.trim();
+  if (!question) { $("q").focus(); return; }
+  ask(question);
 });
+
+function buildSuggestions() {
+  const box = $("suggestions");
+  box.innerHTML = "";
+  SUGGESTIONS.forEach((suggestion) => {
+    const button = el("button");
+    button.type = "button";
+    button.title = suggestion.text;
+    button.appendChild(el("span", "lab", suggestion.label + ": "));
+    button.appendChild(document.createTextNode(suggestion.text));
+    button.addEventListener("click", () => {
+      $("q").value = suggestion.text;
+      $("q").focus();
+    });
+    box.appendChild(button);
+  });
+}
+
+// How many of this graph's runs the selected profile initiated — the number
+// that decides how much evidence an answer about it can rest on.
+function renderAnchorRuns() {
+  const box = $("anchor-runs");
+  const index = INDEX.get(anchorId);
+  if (index === undefined || !EDGES.length) { box.textContent = ""; return; }
+  let runs = 0;
+  adjacency[index].forEach((e) => {
+    if (RELATIONS[EDGES[e][2]] === "initiated" && EDGES[e][0] === index) runs++;
+  });
+  const total = NODES.filter((n) => n.entity_type === "run").length;
+  box.textContent = `· initiated ${runs} of the ${total} runs in this graph`;
+}
+
+// ── boot ────────────────────────────────────────────────────────────────────
+async function loadManifest() {
+  const res = await fetch("/api/v1/query/sandbox-demo/manifest");
+  if (!res.ok) throw new Error(`manifest: HTTP ${res.status}`);
+  manifest = await res.json();
+  anchorId = manifest.anchors.find((a) => a.includes("claude-code")) || manifest.anchors[0];
+  const select = $("anchor");
+  select.innerHTML = "";
+  manifest.anchors.forEach((candidate) => {
+    const option = el("option", null, candidate);
+    option.value = candidate;
+    select.appendChild(option);
+  });
+  select.value = anchorId;
+  select.addEventListener("change", () => {
+    anchorId = select.value;
+    renderAnchorRuns();
+  });
+  $("ks").textContent = `${CANDIDATE_K} candidates → top ${TOP_K}`;
+  renderIdentity(manifest);
+}
+
+async function loadGraph() {
+  const res = await fetch("/api/v1/query/sandbox-demo/graph");
+  if (!res.ok) throw new Error(`graph: HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.snapshot_sha256 !== manifest.snapshot_sha256) {
+    // One process, one index, so this cannot happen here — but if it ever
+    // did, the picture would not be the graph the answer came from.
+    fail("The graph served for drawing is not the snapshot the model was activated " +
+         "for. Nothing drawn from it is safe to read.");
+    return;
+  }
+  ingestGraph(data);
+  buildLegend();
+  renderAnchorRuns();
+  prepareLayout();
+  resize();
+  loop();
+}
+
+readCss();
+$("q").value = FROZEN_QUERY;
+buildSuggestions();
+loadManifest()
+  .then(loadGraph)
+  .catch((e) => fail("Could not read the loaded pack: " + e.message));
 </script>
 </body>
 </html>

@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use itsm_graph_core::edgequake::dto::EdgeQuakeGraphSnapshotDto;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::error::{Result, SandboxDemoError};
@@ -64,6 +65,38 @@ pub struct SnapshotEdge {
     pub action: Option<Arc<str>>,
     /// True when this node is the edge's `source_id`.
     pub outgoing: bool,
+}
+
+/// One entity, projected for drawing.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphNode {
+    /// graph-core external id — the same id every result carries.
+    pub id: String,
+    /// Display label from the exporter.
+    pub label: String,
+    /// Entity type (`run`, `resource`, `identity`, …).
+    pub entity_type: String,
+}
+
+/// The whole frozen snapshot, projected once for a client that draws it.
+///
+/// `edges` is positional rather than a struct per edge on purpose: at
+/// several thousand relationships, four small integers per edge is the
+/// difference between a response a page parses instantly and one it does
+/// not. Each entry is `[source, target, relation, action]`, indexing
+/// `nodes`, `relations` and `actions` respectively; `action` is `-1` when
+/// the relationship carried no action keyword.
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphProjection {
+    /// Every entity, in snapshot order — so an index here is the index the
+    /// rest of this struct means.
+    pub nodes: Vec<GraphNode>,
+    /// Every relationship, exactly once.
+    pub edges: Vec<[i64; 4]>,
+    /// Interned relation keywords.
+    pub relations: Vec<String>,
+    /// Interned action keywords.
+    pub actions: Vec<String>,
 }
 
 /// Structural facts about one governed resource, derived from the graph
@@ -322,6 +355,53 @@ impl SandboxSnapshotIndex {
     /// Edges incident to a node.
     pub fn edges(&self, index: u32) -> &[SnapshotEdge] {
         &self.adjacency[index as usize]
+    }
+
+    /// Project the whole graph for rendering: every entity, and every
+    /// relationship exactly once.
+    ///
+    /// The adjacency list stores each relationship twice, once per
+    /// endpoint; only the `outgoing` copy is emitted, so the projection
+    /// carries [`Self::edge_count`] edges, ordered by source node. Nothing
+    /// is filtered, scored, or renamed on the way out — this is the same
+    /// graph the evidence paths are walked over.
+    pub fn projection(&self) -> GraphProjection {
+        let mut relations: Vec<String> = Vec::new();
+        let mut actions: Vec<String> = Vec::new();
+        let mut relation_ix: HashMap<&str, i64> = HashMap::new();
+        let mut action_ix: HashMap<&str, i64> = HashMap::new();
+        let mut edges = Vec::with_capacity(self.edge_count());
+
+        for (source, adjacent) in self.adjacency.iter().enumerate() {
+            for edge in adjacent.iter().filter(|edge| edge.outgoing) {
+                let relation = *relation_ix.entry(&edge.relation).or_insert_with(|| {
+                    relations.push(edge.relation.to_string());
+                    (relations.len() - 1) as i64
+                });
+                let action = edge.action.as_ref().map_or(-1, |action| {
+                    *action_ix.entry(action).or_insert_with(|| {
+                        actions.push(action.to_string());
+                        (actions.len() - 1) as i64
+                    })
+                });
+                edges.push([source as i64, i64::from(edge.other), relation, action]);
+            }
+        }
+
+        GraphProjection {
+            nodes: self
+                .nodes
+                .iter()
+                .map(|node| GraphNode {
+                    id: node.external_id.clone(),
+                    label: node.label.clone(),
+                    entity_type: node.entity_type.clone(),
+                })
+                .collect(),
+            edges,
+            relations,
+            actions,
+        }
     }
 
     /// The runs an agent profile initiated.
@@ -683,6 +763,65 @@ mod tests {
         assert_eq!(evidence.anchor_runs_touching, 0);
         assert_eq!(evidence.runs_touching, 1);
         assert_eq!(evidence.path[1], "run:ccc");
+    }
+
+    #[test]
+    fn the_projection_carries_every_relationship_exactly_once() {
+        let index = index();
+        let projected = index.projection();
+
+        assert_eq!(projected.nodes.len(), index.node_count());
+        assert_eq!(
+            projected.edges.len(),
+            index.edge_count(),
+            "the adjacency list holds each edge twice; the projection must not"
+        );
+
+        // The count above is the invariant. Distinctness only holds because
+        // this fixture has no parallel relationships — a real snapshot does,
+        // one per audit event — so what is checked here is the shape of the
+        // both-endpoints bug: the same edge coming back reversed.
+        let mut seen = BTreeSet::new();
+        for edge in &projected.edges {
+            seen.insert((edge[0], edge[1], edge[2]));
+        }
+        for edge in &projected.edges {
+            assert!(
+                !seen.contains(&(edge[1], edge[0], edge[2])),
+                "relationship {edge:?} was also projected from its other endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn the_projection_keeps_ids_relations_and_actions_intact() {
+        let index = index();
+        let projected = index.projection();
+
+        // Node order is snapshot order, and external ids are untouched:
+        // the page resolves a result's external_id straight into this list.
+        assert_eq!(projected.nodes[0].id, "agent:claude-code-demo");
+        assert_eq!(projected.nodes[0].entity_type, AGENT_TYPE);
+
+        let denied = projected
+            .edges
+            .iter()
+            .find(|edge| projected.relations[edge[2] as usize] == DENIED_ACCESS)
+            .expect("the fixture carries one refusal");
+        assert_eq!(projected.nodes[denied[0] as usize].id, "run:aaa");
+        assert_eq!(
+            projected.nodes[denied[1] as usize].id,
+            "resource:file:contested"
+        );
+        assert_eq!(projected.actions[denied[3] as usize], "process_exec");
+
+        // An edge with no action keyword says so rather than borrowing one.
+        let initiated = projected
+            .edges
+            .iter()
+            .find(|edge| projected.relations[edge[2] as usize] == INITIATED)
+            .expect("the fixture carries initiated edges");
+        assert_eq!(initiated[3], -1);
     }
 
     #[test]

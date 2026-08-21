@@ -6,6 +6,8 @@
 //! | Method | Path | What it does |
 //! |---|---|---|
 //! | `POST` | `/api/v1/query/sandbox-demo` | run the hero query |
+//! | `GET`  | `/api/v1/query/sandbox-demo/manifest` | the loaded generation's identity |
+//! | `GET`  | `/api/v1/query/sandbox-demo/graph` | the frozen snapshot, for drawing |
 //! | `GET`  | `/demo/sandbox` | the same-origin one-page result UI |
 //!
 //! They carry the loaded [`SandboxDemoQueryEngine`] as an axum `Extension`
@@ -41,6 +43,7 @@ pub fn routes(engine: Arc<SandboxDemoQueryEngine>) -> Router {
         .route("/api/v1/query/sandbox-demo", post(sandbox_demo_query))
         .route("/demo/sandbox", get(demo_page))
         .route("/api/v1/query/sandbox-demo/manifest", get(demo_manifest))
+        .route("/api/v1/query/sandbox-demo/graph", get(demo_graph))
         .layer(Extension(engine))
 }
 
@@ -79,6 +82,29 @@ async fn demo_manifest(
             "graph_core": activation.graph_core_commit,
             "edgequake": activation.edgequake_commit,
         },
+    }))
+}
+
+/// `GET /api/v1/query/sandbox-demo/graph` — the frozen snapshot itself,
+/// so the page can draw the graph an answer is a path through.
+///
+/// Read-only in the strict sense: it serializes the index already in
+/// memory and touches neither the model nor any store. It exists because
+/// an evidence path is only an argument if the room can see the graph it
+/// runs across; the manifest carries counts, and counts are not a picture.
+async fn demo_graph(
+    Extension(engine): Extension<Arc<SandboxDemoQueryEngine>>,
+) -> Json<serde_json::Value> {
+    let index = engine.index();
+    let projection = index.projection();
+    Json(json!({
+        "workspace_id": index.workspace_id(),
+        "snapshot_revision": index.revision(),
+        "snapshot_sha256": index.sha256(),
+        "nodes": projection.nodes,
+        "edges": projection.edges,
+        "relations": projection.relations,
+        "actions": projection.actions,
     }))
 }
 
@@ -142,23 +168,40 @@ mod tests {
 
     #[test]
     fn the_demo_page_never_offers_a_graph_core_off_switch() {
-        // SOP: the page may show the semantic order for comparison, but it
-        // must not offer a control that disables the reranker. Asserting on
-        // the *controls* rather than the prose is what actually holds: the
-        // page has exactly one interactive element, the button that runs
-        // the frozen query.
+        // SOP: the page may show the semantic order for comparison, may let
+        // the presenter ask a question of their own, and may let them pick
+        // which anchor to ask it about. None of that changes how an answer
+        // is produced — this endpoint cannot produce one without graph-core.
+        // What the page must never carry is a control that turns the
+        // reranker off, reweights it, or asks for a semantic-only answer.
+        //
+        // This test used to assert the page had exactly one control at all.
+        // That held the line by holding the page still, and stopped being
+        // the invariant the moment the page started taking questions; it
+        // names the forbidden controls instead.
         let lowered = DEMO_PAGE.to_ascii_lowercase();
-        assert_eq!(
-            lowered.matches("<button").count(),
-            1,
-            "the demo page must have exactly one control"
-        );
-        for element in ["<input", "<select", "<form", "type=\"checkbox\"", "type=\"radio\""] {
+
+        for switch in ["type=\"checkbox\"", "type=\"radio\"", "type=\"range\""] {
             assert!(
-                !lowered.contains(element),
-                "the demo page must not carry a {element} the presenter could flip"
+                !lowered.contains(switch),
+                "the demo page must not carry a {switch} the presenter could flip"
             );
         }
+        for flag in ["semantic_only", "skip_rerank", "skip_graph_core", "graph_core=false"] {
+            assert!(
+                !lowered.contains(flag),
+                "the demo page must not offer {flag}: there is no such answer"
+            );
+        }
+
+        // Every request the page makes goes to this demo's own routes, so a
+        // result on screen cannot have come from somewhere else.
+        assert_eq!(
+            lowered.matches("fetch(").count(),
+            lowered.matches("fetch(\"/api/v1/query/sandbox-demo").count(),
+            "the demo page must only fetch from its own sandbox-demo routes"
+        );
+
         // And it must put the claim on screen.
         assert!(lowered.contains("graph_core_applied"));
     }
