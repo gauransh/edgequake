@@ -21,7 +21,7 @@ edgequake-llm = { workspace = true }
 # pgvector, Redis, or Ollama adapters are pulled in, and nothing here can
 # make a network call.
 #
-# Pinned to itsm-graph-core 06f8fd112c65644f1f04d567dcb23bf3f90e3480
+# Pinned to itsm-graph-core c6cc1d4c27e961b4553e0c78ffcf474531338c20
 # ("feat(serving): embedded, fail-closed graph-core runtime for in-process
 # rerank"). This is a documented sibling-checkout path dependency for the
 # one-day demo build; the committed integration should ultimately pin a
@@ -50,9 +50,10 @@ sqlx = { version = "0.8", features = [
     "chrono",
 ], optional = true }
 
-tempfile = "3"
-
 [dev-dependencies]
+# Only the sandbox-demo unit tests use it (they write activation bundles);
+# unit tests in src/ see dev-dependencies, so it does not belong above.
+tempfile = "3"
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde_json.workspace = true
