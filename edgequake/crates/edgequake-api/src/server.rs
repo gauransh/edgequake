@@ -20,6 +20,7 @@
 //! - [`BR0441`]: Optional feature toggles (CORS, compression, Swagger)
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::HeaderValue;
@@ -34,6 +35,8 @@ use tower_http::{
 use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+
+use edgequake_query::sandbox_demo::SandboxDemoQueryEngine;
 
 use crate::observability_middleware::observability_middleware;
 use crate::openapi::ApiDoc;
@@ -98,17 +101,39 @@ pub fn build_cors_layer(security: &ApiSecurityConfig) -> CorsLayer {
 pub struct Server {
     config: ServerConfig,
     state: AppState,
+    /// The CrystalOS sandbox demo, when EdgeQuake was started with an
+    /// activation bundle. `None` is the ordinary case and simply means the
+    /// demo routes do not exist; it is never a degraded demo.
+    sandbox_demo: Option<Arc<SandboxDemoQueryEngine>>,
 }
 
 impl Server {
     /// Create a new server.
     pub fn new(config: ServerConfig, state: AppState) -> Self {
-        Self { config, state }
+        Self {
+            config,
+            state,
+            sandbox_demo: None,
+        }
+    }
+
+    /// Serve the sandbox demo routes over an already-loaded engine.
+    ///
+    /// The engine is loaded before the server is built (loading it embeds
+    /// every resource document), so a bad pack aborts startup rather than
+    /// producing a server whose demo route fails on first use.
+    pub fn with_sandbox_demo(mut self, engine: Arc<SandboxDemoQueryEngine>) -> Self {
+        self.sandbox_demo = Some(engine);
+        self
     }
 
     /// Build the application router with all middleware.
     pub fn build_router(&self) -> axum::Router {
         let mut app = create_router(self.state.clone());
+
+        if let Some(engine) = &self.sandbox_demo {
+            app = app.merge(crate::handlers::sandbox_demo::routes(Arc::clone(engine)));
+        }
 
         // Merge documentation routes BEFORE global middleware so CORS applies to
         // `/api-docs/openapi.json` and `/swagger-ui/*` (GitHub #277).

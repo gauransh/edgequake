@@ -1,0 +1,165 @@
+//! The CrystalOS sandbox demo query path.
+//!
+//! Two routes, both present only when EdgeQuake was started with a valid
+//! activation bundle (`EDGEQUAKE_SANDBOX_PACK_DIR`):
+//!
+//! | Method | Path | What it does |
+//! |---|---|---|
+//! | `POST` | `/api/v1/query/sandbox-demo` | run the hero query |
+//! | `GET`  | `/demo/sandbox` | the same-origin one-page result UI |
+//!
+//! They carry the loaded [`SandboxDemoQueryEngine`] as an axum `Extension`
+//! rather than a field on [`AppState`](crate::state::AppState): the demo is
+//! an additive, optional surface and every other route — and every test
+//! that builds an `AppState` literal — is unaffected by its presence.
+//!
+//! **There is no way to answer without graph-core.** The engine loads the
+//! model at startup or the process does not start; a query that cannot map
+//! its anchor or a candidate fails with a 4xx/5xx rather than falling back
+//! to the semantic order. The response's `graph_core_applied` is therefore
+//! always `true` — it is on screen so the room can see the claim, not
+//! because it can vary.
+
+use std::sync::Arc;
+
+use axum::extract::Extension;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use edgequake_query::sandbox_demo::{SandboxDemoError, SandboxDemoQueryEngine, SandboxDemoRequest};
+use serde_json::json;
+use tracing::{error, info};
+
+/// The one-page demo UI, served same-origin so its `fetch` needs no CORS
+/// grant and no API host configuration.
+const DEMO_PAGE: &str = include_str!("sandbox_demo.html");
+
+/// Build the demo routes over an already-loaded engine.
+pub fn routes(engine: Arc<SandboxDemoQueryEngine>) -> Router {
+    Router::new()
+        .route("/api/v1/query/sandbox-demo", post(sandbox_demo_query))
+        .route("/demo/sandbox", get(demo_page))
+        .route("/api/v1/query/sandbox-demo/manifest", get(demo_manifest))
+        .layer(Extension(engine))
+}
+
+/// `GET /demo/sandbox` — the presenter's page.
+async fn demo_page() -> Html<&'static str> {
+    Html(DEMO_PAGE)
+}
+
+/// `GET /api/v1/query/sandbox-demo/manifest` — what the page needs to
+/// render before anyone has asked anything: the frozen identity of the
+/// loaded generation and the anchors it can be asked about.
+async fn demo_manifest(
+    Extension(engine): Extension<Arc<SandboxDemoQueryEngine>>,
+) -> Json<serde_json::Value> {
+    let graph_core = engine.graph_core();
+    let activation = graph_core.activation();
+    Json(json!({
+        "workspace_id": engine.workspace_id(),
+        "snapshot_revision": engine.index().revision(),
+        "snapshot_sha256": engine.index().sha256(),
+        "model_version": graph_core.model_version().to_string(),
+        "mapping_hash": graph_core.mapping_hash(),
+        "embedding_model": engine.embedding_model(),
+        "entities": engine.index().node_count(),
+        "relationships": engine.index().edge_count(),
+        "resources": engine.index().resources().len(),
+        "anchors": engine.anchor_candidates(),
+        "weights": {
+            "semantic": activation.weights.semantic,
+            "graph": activation.weights.graph,
+            "structural": activation.weights.structural,
+            "link": activation.weights.link,
+        },
+        "commits": {
+            "sandbox": activation.sandbox_commit,
+            "graph_core": activation.graph_core_commit,
+            "edgequake": activation.edgequake_commit,
+        },
+    }))
+}
+
+/// `POST /api/v1/query/sandbox-demo` — the hero query.
+async fn sandbox_demo_query(
+    Extension(engine): Extension<Arc<SandboxDemoQueryEngine>>,
+    Json(request): Json<SandboxDemoRequest>,
+) -> Response {
+    match engine.query(&request).await {
+        Ok(response) => {
+            info!(
+                anchor = %request.anchor_external_id,
+                model_version = %response.model_version,
+                graph_core_ms = response.graph_core_latency_ms,
+                total_ms = response.total_latency_ms,
+                "sandbox demo query answered by embedded graph-core"
+            );
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(err) => error_response(err),
+    }
+}
+
+/// Map a demo failure onto a status code.
+///
+/// Deliberately blunt: a demo query either produced a graph-core-ranked
+/// answer or it did not, and the error text names which artifact or id
+/// broke so the presenter can say what happened.
+fn error_response(err: SandboxDemoError) -> Response {
+    let status = match &err {
+        SandboxDemoError::BadRequest(_) => StatusCode::BAD_REQUEST,
+        // A rerank that cannot resolve an id is a genuine server-side
+        // pack/graph mismatch, not something the caller phrased wrongly.
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    if status == StatusCode::INTERNAL_SERVER_ERROR {
+        error!(error = %err, "sandbox demo query failed");
+    }
+    (
+        status,
+        Json(json!({
+            "graph_core_applied": false,
+            "error": err.to_string(),
+        })),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bad_request_is_a_400_and_everything_else_is_a_500() {
+        let bad = error_response(SandboxDemoError::BadRequest("anchor missing".into()));
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        let broken = error_response(SandboxDemoError::Snapshot("dangling endpoint".into()));
+        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn the_demo_page_never_offers_a_graph_core_off_switch() {
+        // SOP: the page may show the semantic order for comparison, but it
+        // must not offer a control that disables the reranker. Asserting on
+        // the *controls* rather than the prose is what actually holds: the
+        // page has exactly one interactive element, the button that runs
+        // the frozen query.
+        let lowered = DEMO_PAGE.to_ascii_lowercase();
+        assert_eq!(
+            lowered.matches("<button").count(),
+            1,
+            "the demo page must have exactly one control"
+        );
+        for element in ["<input", "<select", "<form", "type=\"checkbox\"", "type=\"radio\""] {
+            assert!(
+                !lowered.contains(element),
+                "the demo page must not carry a {element} the presenter could flip"
+            );
+        }
+        // And it must put the claim on screen.
+        assert!(lowered.contains("graph_core_applied"));
+    }
+}
