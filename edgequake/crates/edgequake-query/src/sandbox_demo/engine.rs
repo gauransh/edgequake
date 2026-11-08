@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use edgequake_llm::traits::EmbeddingProvider;
 use itsm_graph_core::edgequake::rerank::{
-    rerank_with_scores, BlendWeights, EdgeQuakeRerankCandidate, EdgeQuakeStructuralRerankRequest,
-    ResolvedStructuralScores,
+    rerank_with_scores, BlendWeights, EdgeQuakeRerankCandidate, EdgeQuakeRerankedCandidate,
+    EdgeQuakeStructuralRerankRequest, ResolvedStructuralScores,
 };
 use itsm_graph_core::serving::embedded_runtime::{
     EmbeddedGraphCoreRuntime, EmbeddedRerankResult, ExternalCandidate, SNAPSHOT_FILE,
@@ -41,9 +41,10 @@ use tracing::info;
 
 use super::documents::resource_document;
 use super::error::{Result, SandboxDemoError};
+use super::intent::{spread_matched, IntentConfig, IntentRouting};
 use super::query_embedding::{QueryEmbedConfig, QueryEmbedder};
 use super::snapshot::{SandboxSnapshotIndex, AGENT_TYPE, INITIATED};
-use super::structural::{min_max, ScorerKind, ScoringConfig};
+use super::structural::{min_max, ScorerKind, ScoringConfig, StructuralScorer};
 use super::types::{
     AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,
     SandboxDemoResult, SemanticOrderEntry, StageTimings, MAX_CANDIDATE_K,
@@ -67,6 +68,7 @@ pub struct SandboxDemoQueryEngine {
     pack_dir: PathBuf,
     query_embedder: QueryEmbedder,
     scoring: ScoringConfig,
+    intent: IntentConfig,
     /// Distinct runs touching each resource, parallel to
     /// [`Self::resource_nodes`].
     run_sets: Vec<BTreeSet<u32>>,
@@ -143,16 +145,41 @@ impl SandboxDemoQueryEngine {
         embedding: Arc<dyn EmbeddingProvider>,
         query_embed: QueryEmbedConfig,
     ) -> Result<Self> {
-        Self::load_with_scoring(pack_dir, embedding, query_embed, ScoringConfig::from_env()?).await
+        Self::load_with_intent(
+            pack_dir,
+            embedding,
+            query_embed,
+            ScoringConfig::from_env()?,
+            IntentConfig::from_env()?,
+        )
+        .await
     }
 
     /// [`Self::load_with`] with explicit structural scoring instead of the
-    /// environment's.
+    /// environment's, and intent routing off.
     pub async fn load_with_scoring(
         pack_dir: &Path,
         embedding: Arc<dyn EmbeddingProvider>,
         query_embed: QueryEmbedConfig,
         scoring: ScoringConfig,
+    ) -> Result<Self> {
+        Self::load_with_intent(
+            pack_dir,
+            embedding,
+            query_embed,
+            scoring,
+            IntentConfig::default(),
+        )
+        .await
+    }
+
+    /// [`Self::load_with_scoring`] with explicit intent routing.
+    pub async fn load_with_intent(
+        pack_dir: &Path,
+        embedding: Arc<dyn EmbeddingProvider>,
+        query_embed: QueryEmbedConfig,
+        scoring: ScoringConfig,
+        intent: IntentConfig,
     ) -> Result<Self> {
         let graph_core = Arc::new(EmbeddedGraphCoreRuntime::load_dir(pack_dir)?);
         let activation = graph_core.activation();
@@ -247,6 +274,12 @@ impl SandboxDemoQueryEngine {
             runtime_rerank = scoring.is_runtime_rerank(),
             "sandbox demo blend weights active"
         );
+        info!(
+            intent_routing = ?intent.routing,
+            intent_scorer = %intent.scorer.label(),
+            intent_lambda = intent.lambda,
+            "sandbox demo intent routing"
+        );
 
         let query_embedder = QueryEmbedder::new(
             embedding.clone(),
@@ -264,6 +297,7 @@ impl SandboxDemoQueryEngine {
             pack_dir: pack_dir.to_path_buf(),
             query_embedder,
             scoring,
+            intent,
             run_sets,
             popularity,
         })
@@ -440,8 +474,12 @@ impl SandboxDemoQueryEngine {
         let reranked =
             self.graph_core
                 .rerank(&request.anchor_external_id, candidates, scored.len())?;
-        // `bundle` with the cosine scorer is the runtime's answer, untouched.
-        let reranked = if self.scoring.is_runtime_rerank() {
+        // A routed intent takes the intent blend; otherwise `bundle` with
+        // the cosine scorer is the runtime's answer, untouched.
+        let intent = self.intent.route(&request.query);
+        let reranked = if intent.is_some() {
+            self.intent_rescore(anchor, &scored, reranked)?
+        } else if self.scoring.is_runtime_rerank() {
             reranked
         } else {
             self.rescore(anchor, &scored, reranked)?
@@ -576,7 +614,12 @@ impl SandboxDemoQueryEngine {
                 total_ms: total_latency_ms,
                 query_embedding,
             },
-            structural_scorer: self.scoring.explicit.then(|| self.scoring.scorer.label()),
+            structural_scorer: match intent {
+                Some(_) => Some(self.intent.scorer.label()),
+                None => self.scoring.explicit.then(|| self.scoring.scorer.label()),
+            },
+            intent: (self.intent.routing != IntentRouting::Off)
+                .then(|| intent.map(|i| i.name().to_string())),
             results,
             semantic_order,
         })
@@ -657,6 +700,102 @@ impl SandboxDemoQueryEngine {
         Ok(sums)
     }
 
+    /// The runtime's candidates in semantic order.
+    fn ordered<'a>(
+        &self,
+        scored: &[(usize, f32)],
+        reranked: &'a EmbeddedRerankResult,
+    ) -> Result<Vec<&'a EdgeQuakeRerankedCandidate>> {
+        let by_id: HashMap<&str, _> = reranked
+            .candidates
+            .iter()
+            .map(|c| (c.external_id.as_str(), c))
+            .collect();
+        scored
+            .iter()
+            .map(|(position, _)| {
+                let id = self.external_id(*position);
+                by_id.get(id).copied().ok_or_else(|| {
+                    SandboxDemoError::Snapshot(format!("graph-core dropped candidate {id:?}"))
+                })
+            })
+            .collect()
+    }
+
+    /// `scorer`'s structural value for each of `ordered`, parallel to
+    /// `scored`.
+    fn structural_values(
+        &self,
+        scorer: &StructuralScorer,
+        anchor: u32,
+        scored: &[(usize, f32)],
+        ordered: &[&EdgeQuakeRerankedCandidate],
+    ) -> Result<Vec<f32>> {
+        let ids: Vec<&str> = ordered.iter().map(|c| c.external_id.as_str()).collect();
+        let anchor_runs = self.index.runs_of_agent(anchor);
+        scorer.combine(ordered.len(), |kind| match kind {
+            ScorerKind::Cosine => ordered
+                .iter()
+                .map(|c| {
+                    c.structural_score.ok_or_else(|| {
+                        SandboxDemoError::Snapshot(format!(
+                            "graph-core returned no structural score for {:?}",
+                            c.external_id
+                        ))
+                    })
+                })
+                .collect(),
+            ScorerKind::Popularity => Ok(scored.iter().map(|(p, _)| self.popularity[*p]).collect()),
+            ScorerKind::AgentFrequency => {
+                let all = self.agent_frequency(&anchor_runs);
+                Ok(scored.iter().map(|(p, _)| all[*p]).collect())
+            }
+            ScorerKind::Knn => self.knn(&anchor_runs, &ids),
+        })
+    }
+
+    /// The intent blend: `semantic + λ·spread_matched(structural)` with the
+    /// intent's scorer. `structural_score` reports the scorer's raw value;
+    /// `weights` reports `semantic=1, structural=λ`. Ties break on external
+    /// id, as in graph-core's rerank.
+    fn intent_rescore(
+        &self,
+        anchor: u32,
+        scored: &[(usize, f32)],
+        reranked: EmbeddedRerankResult,
+    ) -> Result<EmbeddedRerankResult> {
+        let ordered = self.ordered(scored, &reranked)?;
+        let structural = self.structural_values(&self.intent.scorer, anchor, scored, &ordered)?;
+        let semantic: Vec<f32> = ordered.iter().map(|c| c.semantic_score).collect();
+        let adjusted = spread_matched(&structural, &semantic);
+        let lambda = self.intent.lambda;
+        let mut candidates: Vec<EdgeQuakeRerankedCandidate> = ordered
+            .iter()
+            .zip(structural.iter().zip(&adjusted))
+            .map(|(c, (raw, adj))| EdgeQuakeRerankedCandidate {
+                structural_score: Some(*raw),
+                link_score: None,
+                blended_score: c.semantic_score + lambda * adj,
+                ..(*c).clone()
+            })
+            .collect();
+        candidates.sort_by(|a, b| {
+            b.blended_score
+                .total_cmp(&a.blended_score)
+                .then_with(|| a.external_id.cmp(&b.external_id))
+        });
+        Ok(EmbeddedRerankResult {
+            candidates,
+            weights: BlendWeights {
+                semantic: 1.0,
+                graph: 0.0,
+                structural: lambda,
+                link: 0.0,
+            },
+            ..reranked
+        })
+    }
+
     /// Replace the runtime's structural score with the configured scorer
     /// and re-blend through graph-core's own `rerank_with_scores`.
     fn rescore(
@@ -665,47 +804,8 @@ impl SandboxDemoQueryEngine {
         scored: &[(usize, f32)],
         reranked: EmbeddedRerankResult,
     ) -> Result<EmbeddedRerankResult> {
-        let by_id: HashMap<&str, _> = reranked
-            .candidates
-            .iter()
-            .map(|c| (c.external_id.as_str(), c))
-            .collect();
-        let ordered = scored
-            .iter()
-            .map(|(position, _)| {
-                let id = self.external_id(*position);
-                by_id.get(id).copied().ok_or_else(|| {
-                    SandboxDemoError::Snapshot(format!("graph-core dropped candidate {id:?}"))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let ids: Vec<&str> = ordered.iter().map(|c| c.external_id.as_str()).collect();
-        let anchor_runs = self.index.runs_of_agent(anchor);
-
-        let structural = self
-            .scoring
-            .scorer
-            .combine(ordered.len(), |kind| match kind {
-                ScorerKind::Cosine => ordered
-                    .iter()
-                    .map(|c| {
-                        c.structural_score.ok_or_else(|| {
-                            SandboxDemoError::Snapshot(format!(
-                                "graph-core returned no structural score for {:?}",
-                                c.external_id
-                            ))
-                        })
-                    })
-                    .collect(),
-                ScorerKind::Popularity => {
-                    Ok(scored.iter().map(|(p, _)| self.popularity[*p]).collect())
-                }
-                ScorerKind::AgentFrequency => {
-                    let all = self.agent_frequency(&anchor_runs);
-                    Ok(scored.iter().map(|(p, _)| all[*p]).collect())
-                }
-                ScorerKind::Knn => self.knn(&anchor_runs, &ids),
-            })?;
+        let ordered = self.ordered(scored, &reranked)?;
+        let structural = self.structural_values(&self.scoring.scorer, anchor, scored, &ordered)?;
 
         let weights = Self::applied_weights(&self.scoring, &reranked.weights);
         let request = EdgeQuakeStructuralRerankRequest {
@@ -1733,6 +1833,213 @@ pub(crate) mod tests {
             bundle_ids, final_ids,
             "the fixture must tell the blends apart"
         );
+    }
+
+    const NEXT_TOUCH_QUERY: &str =
+        "What will claude-code-demo touch next? Refused, risky access, routine permitted.";
+
+    async fn intent_engine(
+        dir: &TempDir,
+        routing: Option<&str>,
+        scorer: Option<&str>,
+        lambda: Option<&str>,
+    ) -> SandboxDemoQueryEngine {
+        SandboxDemoQueryEngine::load_with_intent(
+            dir.path(),
+            Arc::new(KeywordEmbedder),
+            QueryEmbedConfig::default(),
+            ScoringConfig::default(),
+            crate::sandbox_demo::intent::IntentConfig::parse(routing, scorer, lambda).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Golden lines captured from the pre-router default (56060ca):
+    /// `(snapshot, query)` for both fixtures × {hero, next-touch}.
+    fn default_goldens() -> Vec<(Vec<u8>, &'static str, &'static str)> {
+        let lines: Vec<&str> = include_str!("testdata/default_responses.jsonl")
+            .lines()
+            .collect();
+        assert_eq!(lines.len(), 4);
+        let hero = "Which governed resources show the riskiest access pattern? \
+                    Refused, risky access.";
+        vec![
+            (snapshot_json(), hero, lines[0]),
+            (snapshot_json(), NEXT_TOUCH_QUERY, lines[1]),
+            (scorer_snapshot_json(), hero, lines[2]),
+            (scorer_snapshot_json(), NEXT_TOUCH_QUERY, lines[3]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn unset_intent_routing_is_byte_identical_to_the_pre_router_default() {
+        for (snapshot, query, golden) in default_goldens() {
+            let dir = write_pack(&snapshot);
+            for engine in [
+                scored_engine(&dir, None, None).await,
+                intent_engine(&dir, None, None, None).await,
+                intent_engine(&dir, Some("off"), Some("popularity"), Some("5")).await,
+            ] {
+                let response = engine.query(&question(query)).await.unwrap();
+                assert_eq!(stable_bytes(&response), golden, "{query}");
+                let wire = serde_json::to_value(&response).unwrap();
+                assert!(wire.get("intent").is_none(), "{wire}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn next_touch_routing_leaves_other_queries_on_the_default_path() {
+        for (snapshot, query, golden) in default_goldens() {
+            if query == NEXT_TOUCH_QUERY {
+                continue;
+            }
+            let dir = write_pack(&snapshot);
+            let engine =
+                intent_engine(&dir, Some("next_touch"), Some("popularity"), Some("5")).await;
+            let response = engine.query(&question(query)).await.unwrap();
+            assert_eq!(response.intent, Some(None));
+            let mut wire: serde_json::Value =
+                serde_json::from_str(&stable_bytes(&response)).unwrap();
+            let object = wire.as_object_mut().unwrap();
+            assert_eq!(object.remove("intent"), Some(serde_json::Value::Null));
+            assert_eq!(serde_json::to_string(&wire).unwrap(), golden);
+        }
+    }
+
+    /// `final = semantic + λ·spread_matched(structural)` over the whole
+    /// candidate set, with `structural` the anchor's run frequency.
+    fn assert_intent_blend(response: &SandboxDemoResponse, raw: &[(&str, f32)], lambda: f32) {
+        let semantic: std::collections::BTreeMap<&str, f32> = response
+            .semantic_order
+            .iter()
+            .map(|e| (e.external_id.as_str(), (e.semantic_cosine + 1.0) / 2.0))
+            .collect();
+        let ids: Vec<&str> = raw.iter().map(|(id, _)| *id).collect();
+        let adjusted = crate::sandbox_demo::intent::spread_matched(
+            &raw.iter().map(|(_, s)| *s).collect::<Vec<_>>(),
+            &ids.iter().map(|id| semantic[id]).collect::<Vec<_>>(),
+        );
+        let mut expected: Vec<(&str, f32)> = ids
+            .iter()
+            .zip(&adjusted)
+            .map(|(id, adj)| (*id, semantic[id] + lambda * adj))
+            .collect();
+        expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let got: Vec<(&str, f32)> = response
+            .results
+            .iter()
+            .map(|r| (r.external_id.as_str(), r.final_score))
+            .collect();
+        assert_eq!(got.len(), expected.len());
+        for ((gid, gs), (eid, es)) in got.iter().zip(&expected) {
+            assert_eq!(gid, eid, "{got:?} vs {expected:?}");
+            assert!((gs - es).abs() < 1e-5, "{got:?} vs {expected:?}");
+        }
+        assert_scores(response, raw);
+    }
+
+    #[tokio::test]
+    async fn a_next_touch_query_blends_spread_matched_agent_frequency() {
+        let dir = write_pack(&scorer_snapshot_json());
+        // The anchor's runs: wc 1, find 1, id 2, src 1, other 0 —
+        // min-maxed over every resource.
+        let raw = [
+            ("resource:file:wc", 0.5),
+            ("resource:file:find", 0.5),
+            ("resource:file:id", 1.0),
+            ("resource:directory:src", 0.5),
+            ("resource:file:other", 0.0),
+        ];
+        let engine = intent_engine(&dir, Some("next_touch"), None, None).await;
+        let response = engine.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert!(response.graph_core_applied);
+        assert_eq!(response.intent, Some(Some("next_touch".to_string())));
+        assert_eq!(
+            response.structural_scorer.as_deref(),
+            Some("agent_frequency")
+        );
+        assert_eq!(
+            (response.weights.semantic, response.weights.structural),
+            (1.0, 1.0)
+        );
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["intent"], "next_touch");
+        assert_intent_blend(&response, &raw, 1.0);
+        // Structure moves the order: the anchor's most-run resource breaks
+        // the three-way semantic tie and leads; the resource only another
+        // agent touched is pushed below its semantic score.
+        let id = &response.results[0];
+        assert_eq!(id.external_id, "resource:file:id");
+        assert_eq!((id.semantic_rank, id.final_rank), (2, 1));
+        let other = response
+            .results
+            .iter()
+            .find(|r| r.external_id == "resource:file:other")
+            .unwrap();
+        assert!(other.final_score < other.semantic_score);
+
+        let heavier = intent_engine(&dir, Some("next_touch"), None, Some("2.5")).await;
+        let response = heavier.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(response.weights.structural, 2.5);
+        assert_intent_blend(&response, &raw, 2.5);
+
+        // λ = 0 is the semantic order, still labelled with the intent.
+        let zero = intent_engine(&dir, Some("next_touch"), None, Some("0")).await;
+        let response = zero.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(response.intent, Some(Some("next_touch".to_string())));
+        let semantic_ids: Vec<&str> = response
+            .semantic_order
+            .iter()
+            .map(|e| e.external_id.as_str())
+            .collect();
+        let final_ids: Vec<&str> = response
+            .results
+            .iter()
+            .map(|r| r.external_id.as_str())
+            .collect();
+        assert_eq!(final_ids, semantic_ids);
+    }
+
+    #[tokio::test]
+    async fn the_intent_scorer_is_selectable() {
+        let dir = write_pack(&scorer_snapshot_json());
+        // Distinct runs per resource: wc 2, find 1, id 2, src 1, other 2.
+        let raw = [
+            ("resource:file:wc", 1.0),
+            ("resource:file:find", 0.0),
+            ("resource:file:id", 1.0),
+            ("resource:directory:src", 0.0),
+            ("resource:file:other", 1.0),
+        ];
+        let engine = intent_engine(&dir, Some("next_touch"), Some("popularity"), None).await;
+        let response = engine.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(response.structural_scorer.as_deref(), Some("popularity"));
+        assert_intent_blend(&response, &raw, 1.0);
+
+        let blend = intent_engine(
+            &dir,
+            Some("next_touch"),
+            Some("blend:popularity=0.5,agent_frequency=0.5"),
+            None,
+        )
+        .await;
+        let response = blend.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(
+            response.structural_scorer.as_deref(),
+            Some("blend:popularity=0.5,agent_frequency=0.5")
+        );
+        // Each source min-maxed over the candidates, then averaged.
+        let mixed: Vec<(&str, f32)> = [
+            ("resource:file:wc", 0.75),
+            ("resource:file:find", 0.25),
+            ("resource:file:id", 1.0),
+            ("resource:directory:src", 0.25),
+            ("resource:file:other", 0.5),
+        ]
+        .to_vec();
+        assert_intent_blend(&response, &mixed, 1.0);
     }
 
     #[tokio::test]

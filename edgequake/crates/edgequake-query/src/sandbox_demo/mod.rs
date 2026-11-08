@@ -25,6 +25,10 @@
 //! score is still returned; `EDGEQUAKE_SANDBOX_BLEND_WEIGHTS=bundle`
 //! restores the frozen weights. See [`structural`].
 //!
+//! `EDGEQUAKE_SANDBOX_INTENT_ROUTING=next_touch` (off by default) routes
+//! queries matching a fixed next-touch lexicon to a spread-matched
+//! semantic + structural blend. See [`intent`].
+//!
 //! This is a focused query adapter, not a storage migration. The same
 //! [`itsm_graph_core::serving::embedded_runtime::EmbeddedGraphCoreRuntime`]
 //! interface is what would later slot into EdgeQuake Local mode between
@@ -34,6 +38,7 @@
 pub mod documents;
 pub mod engine;
 pub mod error;
+pub mod intent;
 pub mod query_embedding;
 pub mod snapshot;
 pub mod structural;
@@ -41,6 +46,10 @@ pub mod types;
 
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
 pub use error::{Result, SandboxDemoError};
+pub use intent::{
+    Intent, IntentConfig, IntentRouting, DEFAULT_INTENT_LAMBDA, INTENT_LAMBDA_ENV,
+    INTENT_ROUTING_ENV, INTENT_SCORER_ENV,
+};
 pub use query_embedding::{
     QueryEmbedConfig, DEFAULT_QUERY_EMBED_CACHE_BYTES, DEFAULT_QUERY_EMBED_CACHE_ENTRIES,
     QUERY_EMBED_CACHE_BYTES_ENV, QUERY_EMBED_CACHE_ENV,

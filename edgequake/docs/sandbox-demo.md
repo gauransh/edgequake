@@ -144,6 +144,44 @@ evidence and is independent of the weights.
 `semantic_score` is `(cosine + 1) / 2` because the blend contract is unit-range;
 the raw cosine is also returned as `semantic_cosine`.
 
+### Opt-in intent routing
+
+`EDGEQUAKE_SANDBOX_INTENT_ROUTING` is `off` by default. Unset (or `off`), every
+query takes the path above and the response is byte-identical to before the knob
+existed — there is no `intent` field (pinned by a golden test captured at
+56060ca).
+
+With `EDGEQUAKE_SANDBOX_INTENT_ROUTING=next_touch`, a query that matches the
+next-touch lexicon is scored as
+
+```text
+structural' = zscore(structural over the candidate set) · std(semantic over the candidate set)
+final_score = semantic + λ · structural'
+```
+
+with population standard deviations; a constant structural (or semantic) column
+gives `structural' = 0`. `structural` comes from
+`EDGEQUAKE_SANDBOX_INTENT_SCORER` (`agent_frequency` default | `popularity` |
+`cosine` | `knn` | `blend:<name>=<w>,...`, same grammar as the structural scorer)
+and `λ` from `EDGEQUAKE_SANDBOX_INTENT_LAMBDA` (default `1.0`, finite, `>= 0`).
+Such a response carries `"intent": "next_touch"`, `structural_scorer` names the
+intent scorer, `structural_score` is the scorer's raw value, and `weights` is
+`semantic=1, structural=λ`. Ties break on external id. Every other query keeps
+the default path exactly and carries `"intent": null`.
+
+The lexicon is fixed in code (`sandbox_demo::intent`), not tuned on results.
+Lowercase, split on whitespace, trim punctuation from token ends; a query matches
+when a cue and an action occur within 4 tokens of each other, either order:
+
+| cues | actions |
+|---|---|
+| `will`, `next`, `likely`, `usually`, `typically`, `tends to`, `tend to`, `going to` | `touch(es)`, `use(s)`, `access(es)`, `open(s)`, `run(s)`, `need(s)` |
+
+Whole tokens only (`reuse` is not `use`, `willing` is not `will`). Matches:
+"What will claude-code-demo touch next?", "Which file does it open next?".
+Does not match: "Which resources show the riskiest access pattern?", "Who will
+approve this?". Known looseness: `run` is also a noun, so "the next run" matches.
+
 ## Evidence
 
 Each result carries `[anchor, run, relation, resource]`, resolved from the
