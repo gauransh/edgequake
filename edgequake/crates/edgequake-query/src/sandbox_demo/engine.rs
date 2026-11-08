@@ -38,8 +38,8 @@ use super::documents::resource_document;
 use super::error::{Result, SandboxDemoError};
 use super::snapshot::{SandboxSnapshotIndex, AGENT_TYPE, INITIATED};
 use super::types::{
-    AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,
-    SandboxDemoResult, SemanticOrderEntry, MAX_CANDIDATE_K,
+    AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,
+    SandboxDemoResponse, SandboxDemoResult, SemanticOrderEntry, StageTimings, MAX_CANDIDATE_K,
 };
 
 /// Environment variable naming the activation bundle directory. When it is
@@ -88,6 +88,10 @@ fn normalize(vector: &mut [f32]) {
             *value /= norm;
         }
     }
+}
+
+fn ms_since(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 impl SandboxDemoQueryEngine {
@@ -260,6 +264,28 @@ impl SandboxDemoQueryEngine {
         }
     }
 
+    /// Embed the question and return it L2-normalized at the index's
+    /// dimension.
+    async fn embed_question(&self, text: &str) -> Result<(Vec<f32>, QueryEmbeddingSource)> {
+        let mut question = self
+            .embedding
+            .embed_batched(&[text.to_string()])
+            .await
+            .map_err(|e| SandboxDemoError::Embedding(e.to_string()))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| SandboxDemoError::Embedding("provider returned no vector".into()))?;
+        if question.len() != self.dim {
+            return Err(SandboxDemoError::Embedding(format!(
+                "question embedded to {} dimensions, the index is {}",
+                question.len(),
+                self.dim
+            )));
+        }
+        normalize(&mut question);
+        Ok((question, QueryEmbeddingSource::Miss))
+    }
+
     /// Run one sandbox demo query.
     pub async fn query(&self, request: &SandboxDemoRequest) -> Result<SandboxDemoResponse> {
         let total_started = Instant::now();
@@ -309,23 +335,10 @@ impl SandboxDemoQueryEngine {
 
         // 1-2. embed the question, retrieve by semantic cosine ------------
         let semantic_started = Instant::now();
-        let mut question = self
-            .embedding
-            .embed_batched(std::slice::from_ref(&request.query))
-            .await
-            .map_err(|e| SandboxDemoError::Embedding(e.to_string()))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| SandboxDemoError::Embedding("provider returned no vector".into()))?;
-        if question.len() != self.dim {
-            return Err(SandboxDemoError::Embedding(format!(
-                "question embedded to {} dimensions, the index is {}",
-                question.len(),
-                self.dim
-            )));
-        }
-        normalize(&mut question);
+        let (question, query_embedding) = self.embed_question(&request.query).await?;
+        let provider_embed_ms = ms_since(semantic_started);
 
+        let scan_started = Instant::now();
         let mut scored: Vec<(usize, f32)> = (0..self.resource_nodes.len())
             .map(|position| {
                 let cosine: f32 = question
@@ -337,6 +350,9 @@ impl SandboxDemoQueryEngine {
                 (position, cosine)
             })
             .collect();
+        let semantic_scan_ms = ms_since(scan_started);
+
+        let select_started = Instant::now();
         // Descending cosine, ties broken on external id so warm runs are
         // byte-identical.
         scored.sort_by(|a, b| {
@@ -348,7 +364,8 @@ impl SandboxDemoQueryEngine {
             })
         });
         scored.truncate(request.candidate_k);
-        let semantic_latency_ms = semantic_started.elapsed().as_secs_f64() * 1000.0;
+        let candidate_select_ms = ms_since(select_started);
+        let semantic_latency_ms = ms_since(semantic_started);
 
         // 3. the embedded graph-core rerank -------------------------------
         let candidates: Vec<ExternalCandidate> = scored
@@ -369,9 +386,10 @@ impl SandboxDemoQueryEngine {
         let reranked =
             self.graph_core
                 .rerank(&request.anchor_external_id, candidates, scored.len())?;
-        let graph_core_latency_ms = graph_core_started.elapsed().as_secs_f64() * 1000.0;
+        let graph_core_latency_ms = ms_since(graph_core_started);
 
         // 4. final selection + evidence ------------------------------------
+        let evidence_started = Instant::now();
         let semantic_rank_of: std::collections::HashMap<&str, (usize, f32)> = scored
             .iter()
             .enumerate()
@@ -462,6 +480,8 @@ impl SandboxDemoQueryEngine {
             .collect();
 
         let weights = self.graph_core.weights();
+        let evidence_ms = ms_since(evidence_started);
+        let total_latency_ms = ms_since(total_started);
         Ok(SandboxDemoResponse {
             // Unconditionally true: this line is only reachable through a
             // successful embedded rerank.
@@ -486,7 +506,16 @@ impl SandboxDemoQueryEngine {
             top_k: results.len(),
             graph_core_latency_ms,
             semantic_latency_ms,
-            total_latency_ms: total_started.elapsed().as_secs_f64() * 1000.0,
+            total_latency_ms,
+            timings: StageTimings {
+                provider_embed_ms,
+                semantic_scan_ms,
+                candidate_select_ms,
+                graph_core_rerank_ms: graph_core_latency_ms,
+                evidence_ms,
+                total_ms: total_latency_ms,
+                query_embedding,
+            },
             results,
             semantic_order,
         })
@@ -891,6 +920,57 @@ mod tests {
             response.graph_core_latency_ms
         );
         assert!(response.total_latency_ms >= response.graph_core_latency_ms);
+    }
+
+    #[tokio::test]
+    async fn stage_timings_are_disjoint_and_bounded_by_the_total() {
+        let snapshot = snapshot_json();
+        let dir = write_pack(&snapshot);
+        let engine = engine(&dir).await.unwrap();
+
+        let response = engine.query(&hero_query()).await.unwrap();
+        let t = response.timings;
+        assert_eq!(t.query_embedding, QueryEmbeddingSource::Miss);
+        assert_eq!(t.total_ms, response.total_latency_ms);
+        assert_eq!(t.graph_core_rerank_ms, response.graph_core_latency_ms);
+        let stages = [
+            t.provider_embed_ms,
+            t.semantic_scan_ms,
+            t.candidate_select_ms,
+            t.graph_core_rerank_ms,
+            t.evidence_ms,
+        ];
+        assert!(stages.iter().all(|s| *s >= 0.0));
+        assert!(stages.iter().sum::<f64>() <= t.total_ms);
+        assert!(
+            t.provider_embed_ms + t.semantic_scan_ms + t.candidate_select_ms
+                <= response.semantic_latency_ms
+        );
+    }
+
+    #[test]
+    fn a_response_without_timings_still_parses() {
+        let value = serde_json::json!({
+            "graph_core_applied": true, "workspace_id": "w", "query": "q",
+            "anchor": {"external_id": "a", "label": "a", "entity_type": "agent_profile",
+                       "run_count": 0},
+            "model_version": "v1", "mapping_hash": "h", "snapshot_revision": "r",
+            "snapshot_sha256": "s",
+            "weights": {"semantic": 0.6, "graph": 0.0, "structural": 0.4, "link": 0.0},
+            "embedding_model": "m", "snapshot_entities": 0, "snapshot_relationships": 0,
+            "candidate_k": 0, "top_k": 0, "graph_core_latency_ms": 0.0,
+            "semantic_latency_ms": 0.0, "total_latency_ms": 0.0,
+            "results": [], "semantic_order": [],
+        });
+        let parsed: SandboxDemoResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.timings, StageTimings::default());
+
+        let encoded = serde_json::to_value(StageTimings {
+            query_embedding: QueryEmbeddingSource::Coalesced,
+            ..StageTimings::default()
+        })
+        .unwrap();
+        assert_eq!(encoded["query_embedding"], "coalesced");
     }
 
     #[tokio::test]

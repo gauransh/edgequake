@@ -120,6 +120,8 @@ async fn sandbox_demo_query(
                 model_version = %response.model_version,
                 graph_core_ms = response.graph_core_latency_ms,
                 total_ms = response.total_latency_ms,
+                embed_ms = response.timings.provider_embed_ms,
+                query_embedding = ?response.timings.query_embedding,
                 "sandbox demo query answered by embedded graph-core"
             );
             (StatusCode::OK, Json(response)).into_response()
@@ -187,7 +189,12 @@ mod tests {
                 "the demo page must not carry a {switch} the presenter could flip"
             );
         }
-        for flag in ["semantic_only", "skip_rerank", "skip_graph_core", "graph_core=false"] {
+        for flag in [
+            "semantic_only",
+            "skip_rerank",
+            "skip_graph_core",
+            "graph_core=false",
+        ] {
             assert!(
                 !lowered.contains(flag),
                 "the demo page must not offer {flag}: there is no such answer"
@@ -198,7 +205,9 @@ mod tests {
         // result on screen cannot have come from somewhere else.
         assert_eq!(
             lowered.matches("fetch(").count(),
-            lowered.matches("fetch(\"/api/v1/query/sandbox-demo").count(),
+            lowered
+                .matches("fetch(\"/api/v1/query/sandbox-demo")
+                .count(),
             "the demo page must only fetch from its own sandbox-demo routes"
         );
 

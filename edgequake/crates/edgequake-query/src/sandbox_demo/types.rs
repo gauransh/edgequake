@@ -166,8 +166,51 @@ pub struct SandboxDemoResponse {
     pub semantic_latency_ms: f64,
     /// Total server-side time for the query.
     pub total_latency_ms: f64,
+    /// Per-stage split of the same query. Additive: older clients that do
+    /// not know the field still parse, and older servers yield defaults.
+    #[serde(default)]
+    pub timings: StageTimings,
     /// The graph-core-approved order, truncated to `top_k`.
     pub results: Vec<SandboxDemoResult>,
     /// The semantic-only order over the same candidate set, for contrast.
     pub semantic_order: Vec<SemanticOrderEntry>,
+}
+
+/// Where the query's embedding vector came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryEmbeddingSource {
+    /// This request asked the provider for a single text.
+    #[default]
+    Miss,
+    /// Served from the engine's query-embedding cache; no provider call.
+    Hit,
+    /// Joined an identical query's in-flight provider call.
+    Coalesced,
+    /// Embedded by one provider call that carried other queries too.
+    Batched,
+}
+
+/// Disjoint wall-clock stages of one query, in milliseconds.
+///
+/// Each span is measured at its own boundaries; they are not nested, so
+/// they never double count. Small unmeasured gaps between stages mean they
+/// sum to slightly less than `total_ms`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StageTimings {
+    /// Obtaining the normalized question vector (provider, cache, or wait).
+    pub provider_embed_ms: f64,
+    /// The brute-force cosine scan over every resource.
+    pub semantic_scan_ms: f64,
+    /// Ordering the scan and keeping the top `candidate_k`.
+    pub candidate_select_ms: f64,
+    /// The embedded graph-core rerank.
+    pub graph_core_rerank_ms: f64,
+    /// Final selection, evidence paths, and the semantic-order contrast.
+    pub evidence_ms: f64,
+    /// Total server-side time; equals `total_latency_ms`.
+    pub total_ms: f64,
+    /// How the question vector was obtained.
+    pub query_embedding: QueryEmbeddingSource,
 }

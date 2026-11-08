@@ -38,6 +38,7 @@ pub use snapshot::{
     SnapshotNode,
 };
 pub use types::{
-    AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,
-    SandboxDemoResult, SemanticOrderEntry, DEFAULT_CANDIDATE_K, DEFAULT_TOP_K, MAX_CANDIDATE_K,
+    AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,
+    SandboxDemoResponse, SandboxDemoResult, SemanticOrderEntry, StageTimings, DEFAULT_CANDIDATE_K,
+    DEFAULT_TOP_K, MAX_CANDIDATE_K,
 };
