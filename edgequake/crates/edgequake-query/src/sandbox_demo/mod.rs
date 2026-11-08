@@ -35,8 +35,7 @@ pub mod types;
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
 pub use error::{Result, SandboxDemoError};
 pub use query_embedding::{
-    QueryEmbedConfig, DEFAULT_EMBED_BATCH_MAX, DEFAULT_QUERY_EMBED_CACHE_BYTES,
-    DEFAULT_QUERY_EMBED_CACHE_ENTRIES, EMBED_BATCH_MAX_ENV, EMBED_BATCH_WINDOW_ENV,
+    QueryEmbedConfig, DEFAULT_QUERY_EMBED_CACHE_BYTES, DEFAULT_QUERY_EMBED_CACHE_ENTRIES,
     QUERY_EMBED_CACHE_BYTES_ENV, QUERY_EMBED_CACHE_ENV,
 };
 pub use snapshot::{

@@ -10,22 +10,14 @@
 //!   provider request. No lock is held across that await; waiters share a
 //!   future, and the future removes itself from the in-flight map when it
 //!   settles. Errors reach every waiter and are never cached.
-//! - **Batched, optionally.** Distinct cold questions arriving within
-//!   `EDGEQUAKE_SANDBOX_EMBED_BATCH_WINDOW_US` share one provider call of
-//!   up to `EDGEQUAKE_SANDBOX_EMBED_BATCH_MAX` texts. Off by default:
-//!   against local Ollama the batched vectors are bit-identical but one
-//!   call of N texts was no faster than N concurrent single calls.
 //! - **Rollback.** `EDGEQUAKE_SANDBOX_QUERY_EMBED_CACHE=0` restores the
 //!   original one-provider-call-per-query path exactly.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use edgequake_llm::traits::EmbeddingProvider;
 use futures::future::{BoxFuture, FutureExt, Shared};
-use tokio::sync::oneshot;
 
 use super::error::{Result, SandboxDemoError};
 use super::types::QueryEmbeddingSource;
@@ -39,13 +31,6 @@ pub const QUERY_EMBED_CACHE_BYTES_ENV: &str = "EDGEQUAKE_SANDBOX_QUERY_EMBED_CAC
 pub const DEFAULT_QUERY_EMBED_CACHE_ENTRIES: usize = 4096;
 /// Default byte cap: ~20k 768-d vectors, far above the entry cap.
 pub const DEFAULT_QUERY_EMBED_CACHE_BYTES: usize = 64 << 20;
-/// How long a cold question waits for others to share its provider call,
-/// in microseconds; `0` (the default) disables batching.
-pub const EMBED_BATCH_WINDOW_ENV: &str = "EDGEQUAKE_SANDBOX_EMBED_BATCH_WINDOW_US";
-/// Most questions one batched provider call carries.
-pub const EMBED_BATCH_MAX_ENV: &str = "EDGEQUAKE_SANDBOX_EMBED_BATCH_MAX";
-/// Default batch size cap.
-pub const DEFAULT_EMBED_BATCH_MAX: usize = 32;
 /// Bookkeeping per entry beyond the text and the vector.
 const ENTRY_OVERHEAD_BYTES: usize = 128;
 
@@ -63,10 +48,6 @@ pub struct QueryEmbedConfig {
     pub cache_entries: usize,
     /// Approximate byte cap.
     pub cache_bytes: usize,
-    /// Gathering window for distinct cold questions; zero disables.
-    pub batch_window: Duration,
-    /// Most questions per batched provider call; `<= 1` disables.
-    pub batch_max: usize,
 }
 
 impl Default for QueryEmbedConfig {
@@ -74,8 +55,6 @@ impl Default for QueryEmbedConfig {
         Self {
             cache_entries: DEFAULT_QUERY_EMBED_CACHE_ENTRIES,
             cache_bytes: DEFAULT_QUERY_EMBED_CACHE_BYTES,
-            batch_window: Duration::ZERO,
-            batch_max: DEFAULT_EMBED_BATCH_MAX,
         }
     }
 }
@@ -87,13 +66,7 @@ impl QueryEmbedConfig {
         Self {
             cache_entries: env_usize(QUERY_EMBED_CACHE_ENV, defaults.cache_entries),
             cache_bytes: env_usize(QUERY_EMBED_CACHE_BYTES_ENV, defaults.cache_bytes),
-            batch_window: Duration::from_micros(env_usize(EMBED_BATCH_WINDOW_ENV, 0) as u64),
-            batch_max: env_usize(EMBED_BATCH_MAX_ENV, defaults.batch_max),
         }
-    }
-
-    fn batching(&self) -> bool {
-        self.cache_entries > 0 && !self.batch_window.is_zero() && self.batch_max > 1
     }
 
     /// The cache off: one provider call per query, as before it existed.
@@ -115,15 +88,7 @@ struct EmbedKey {
 }
 
 type Outcome = std::result::Result<Arc<[f32]>, String>;
-/// A vector and whether its provider call carried other questions.
-type Fetched = std::result::Result<(Arc<[f32]>, bool), String>;
-type InFlight = Shared<BoxFuture<'static, Fetched>>;
-
-struct Pending {
-    id: u64,
-    texts: Vec<String>,
-    waiters: Vec<oneshot::Sender<Fetched>>,
-}
+type InFlight = Shared<BoxFuture<'static, Outcome>>;
 
 struct Entry {
     vector: Arc<[f32]>,
@@ -188,8 +153,6 @@ struct Inner {
     config: QueryEmbedConfig,
     scope: (Arc<str>, Arc<str>, usize, Arc<str>),
     state: Mutex<State>,
-    pending: Mutex<Option<Pending>>,
-    next_batch: AtomicU64,
 }
 
 impl Inner {
@@ -220,87 +183,6 @@ impl Inner {
             .next()
             .ok_or_else(|| "provider returned no vector".to_string())?;
         finish(vector, self.dim)
-    }
-
-    /// Join (or open) the gathering batch and wait for its vector.
-    async fn fetch_batched(self: &Arc<Self>, text: &str) -> Fetched {
-        let (sender, receiver) = oneshot::channel();
-        let full = {
-            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-            let batch = match pending.as_mut() {
-                Some(batch) => batch,
-                None => {
-                    let id = self.next_batch.fetch_add(1, Ordering::Relaxed);
-                    tokio::spawn(self.clone().flush_after_window(id));
-                    pending.insert(Pending {
-                        id,
-                        texts: Vec::new(),
-                        waiters: Vec::new(),
-                    })
-                }
-            };
-            batch.texts.push(text.to_string());
-            batch.waiters.push(sender);
-            if batch.texts.len() >= self.config.batch_max {
-                pending.take()
-            } else {
-                None
-            }
-        };
-        if let Some(batch) = full {
-            tokio::spawn(self.clone().run_batch(batch));
-        }
-        receiver
-            .await
-            .unwrap_or_else(|_| Err("embedding batch was abandoned".to_string()))
-    }
-
-    async fn flush_after_window(self: Arc<Self>, id: u64) {
-        tokio::time::sleep(self.config.batch_window).await;
-        let batch = {
-            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-            match pending.as_ref() {
-                Some(batch) if batch.id == id => pending.take(),
-                _ => None,
-            }
-        };
-        if let Some(batch) = batch {
-            self.run_batch(batch).await;
-        }
-    }
-
-    /// One provider call for the whole batch, scattered back in order.
-    async fn run_batch(self: Arc<Self>, batch: Pending) {
-        let Pending { texts, waiters, .. } = batch;
-        let batched = texts.len() > 1;
-        let vectors = match self.provider.embed_batched(&texts).await {
-            Ok(vectors) if vectors.len() == texts.len() => vectors,
-            Ok(vectors) => {
-                let message = if vectors.is_empty() && texts.len() == 1 {
-                    "provider returned no vector".to_string()
-                } else {
-                    format!(
-                        "provider returned {} vectors for {} questions",
-                        vectors.len(),
-                        texts.len()
-                    )
-                };
-                for waiter in waiters {
-                    let _ = waiter.send(Err(message.clone()));
-                }
-                return;
-            }
-            Err(e) => {
-                let message = e.to_string();
-                for waiter in waiters {
-                    let _ = waiter.send(Err(message.clone()));
-                }
-                return;
-            }
-        };
-        for (vector, waiter) in vectors.into_iter().zip(waiters) {
-            let _ = waiter.send(finish(vector, self.dim).map(|v| (v, batched)));
-        }
     }
 }
 
@@ -341,8 +223,6 @@ impl QueryEmbedder {
                 config,
                 scope,
                 state: Mutex::new(State::default()),
-                pending: Mutex::new(None),
-                next_batch: AtomicU64::new(0),
             }),
         }
     }
@@ -373,11 +253,7 @@ impl QueryEmbedder {
                 }
             }
         };
-        let (vector, batched) = shared.await.map_err(SandboxDemoError::Embedding)?;
-        let source = match source {
-            QueryEmbeddingSource::Miss if batched => QueryEmbeddingSource::Batched,
-            other => other,
-        };
+        let vector = shared.await.map_err(SandboxDemoError::Embedding)?;
         Ok((vector, source))
     }
 
@@ -385,14 +261,10 @@ impl QueryEmbedder {
     fn call(&self, key: EmbedKey) -> InFlight {
         let inner = self.inner.clone();
         async move {
-            let outcome = if inner.config.batching() {
-                inner.fetch_batched(&key.text).await
-            } else {
-                inner.fetch(&key.text).await.map(|v| (v, false))
-            };
+            let outcome = inner.fetch(&key.text).await;
             let mut state = inner.state();
             state.in_flight.remove(&key);
-            if let Ok((vector, _)) = &outcome {
+            if let Ok(vector) = &outcome {
                 state.insert(key, vector.clone(), &inner.config);
             }
             outcome
@@ -455,7 +327,6 @@ mod tests {
             QueryEmbedConfig {
                 cache_entries: 100,
                 cache_bytes: one_entry,
-                ..QueryEmbedConfig::default()
             },
         );
         for text in ["risk a", "risk b", "risk c"] {
@@ -471,81 +342,6 @@ mod tests {
         assert_eq!(source(&cache, &long).await, QueryEmbeddingSource::Miss);
         assert_eq!(source(&cache, &long).await, QueryEmbeddingSource::Miss);
         assert_eq!(source(&cache, "risk c").await, QueryEmbeddingSource::Hit);
-    }
-
-    fn batching(window_ms: u64, batch_max: usize) -> QueryEmbedConfig {
-        QueryEmbedConfig {
-            batch_window: Duration::from_millis(window_ms),
-            batch_max,
-            ..QueryEmbedConfig::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn distinct_cold_questions_share_one_batched_call() {
-        let provider = CountingEmbedder::stalling(0);
-        let batched = embedder(&provider, batching(30, 32));
-        let texts = ["refused", "risk risk", "permitted routine", "process_exec"];
-        let got = futures::future::join_all(texts.iter().map(|t| batched.embed(t))).await;
-        assert_eq!(provider.calls(), 1);
-        assert_eq!(*provider.batch_sizes.lock().unwrap(), vec![4]);
-
-        let reference = CountingEmbedder::stalling(0);
-        let single = embedder(&reference, QueryEmbedConfig::disabled());
-        for (text, got) in texts.iter().zip(got) {
-            let (vector, source) = got.unwrap();
-            assert_eq!(source, QueryEmbeddingSource::Batched);
-            assert_eq!(&*vector, &*single.embed(text).await.unwrap().0);
-        }
-        for text in texts {
-            assert_eq!(source(&batched, text).await, QueryEmbeddingSource::Hit);
-        }
-    }
-
-    #[tokio::test]
-    async fn a_full_batch_is_sent_without_waiting_out_the_window() {
-        let provider = CountingEmbedder::stalling(0);
-        let batched = embedder(&provider, batching(60_000, 2));
-        let texts = ["a risk", "b risk", "c risk", "d risk"];
-        let got = futures::future::join_all(texts.iter().map(|t| batched.embed(t))).await;
-        assert!(got.iter().all(|g| g.is_ok()));
-        assert_eq!(*provider.batch_sizes.lock().unwrap(), vec![2, 2]);
-    }
-
-    #[tokio::test]
-    async fn a_lone_question_in_a_window_is_a_plain_miss() {
-        let provider = CountingEmbedder::stalling(0);
-        let batched = embedder(&provider, batching(1, 32));
-        assert_eq!(source(&batched, "risk").await, QueryEmbeddingSource::Miss);
-        assert_eq!(*provider.batch_sizes.lock().unwrap(), vec![1]);
-    }
-
-    #[tokio::test]
-    async fn a_failed_batch_fails_every_member_and_caches_nothing() {
-        let provider = CountingEmbedder::stalling(0);
-        provider.fail_boom.store(true, Ordering::SeqCst);
-        let batched = embedder(&provider, batching(30, 32));
-        let texts = ["boom risk", "refused", "boom risk"];
-        let got = futures::future::join_all(texts.iter().map(|t| batched.embed(t))).await;
-        assert_eq!(
-            provider.calls(),
-            1,
-            "identical texts coalesce before batching"
-        );
-        for result in got {
-            assert!(matches!(
-                result,
-                Err(SandboxDemoError::Embedding(m)) if m.contains("provider is down")
-            ));
-        }
-        assert_eq!(batched.cached_entries().0, 0);
-
-        provider.fail_boom.store(false, Ordering::SeqCst);
-        assert_eq!(
-            source(&batched, "refused").await,
-            QueryEmbeddingSource::Miss
-        );
-        assert_eq!(provider.calls(), 2);
     }
 
     #[tokio::test]
