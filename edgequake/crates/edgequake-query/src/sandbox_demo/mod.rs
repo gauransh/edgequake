@@ -30,6 +30,7 @@ pub mod engine;
 pub mod error;
 pub mod query_embedding;
 pub mod snapshot;
+pub mod structural;
 pub mod types;
 
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
@@ -41,6 +42,10 @@ pub use query_embedding::{
 pub use snapshot::{
     EvidencePath, GraphNode, GraphProjection, ResourceProfile, SandboxSnapshotIndex, SnapshotEdge,
     SnapshotNode,
+};
+pub use structural::{
+    ScorerKind, ScoringConfig, StructuralScorer, WeightOverride, BLEND_WEIGHTS_ENV,
+    STRUCTURAL_SCORER_ENV,
 };
 pub use types::{
     AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,
