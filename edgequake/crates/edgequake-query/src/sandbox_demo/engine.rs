@@ -189,6 +189,7 @@ impl SandboxDemoQueryEngine {
             embedding_model = embedding.model(),
             embed_ms = started.elapsed().as_secs_f64() * 1000.0,
             query_embed_cache_entries = query_embed.cache_entries,
+            query_embed_batch_window_us = query_embed.batch_window.as_micros() as u64,
             "sandbox demo pack loaded; graph-core is mandatory on this path"
         );
 
@@ -1140,6 +1141,48 @@ pub(crate) mod tests {
         );
         let first = stable_bytes(&responses[0]);
         assert!(responses.iter().all(|r| stable_bytes(r) == first));
+    }
+
+    #[tokio::test]
+    async fn concurrent_distinct_questions_batch_without_changing_answers() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let batched = counting_engine(
+            &dir,
+            &embedder,
+            QueryEmbedConfig {
+                batch_window: std::time::Duration::from_millis(30),
+                ..QueryEmbedConfig::default()
+            },
+        )
+        .await;
+        let plain = counting_engine(
+            &dir,
+            &CountingEmbedder::stalling(0),
+            QueryEmbedConfig::disabled(),
+        )
+        .await;
+        let before = embedder.calls();
+
+        let requests = [
+            hero_query(),
+            question("routine permitted"),
+            question("process_exec refused"),
+        ];
+        let responses = futures::future::join_all(requests.iter().map(|r| batched.query(r))).await;
+        assert_eq!(embedder.calls(), before + 1);
+        assert_eq!(embedder.batch_sizes.lock().unwrap().last(), Some(&3));
+        for (request, response) in requests.iter().zip(responses) {
+            let response = response.unwrap();
+            assert_eq!(
+                response.timings.query_embedding,
+                QueryEmbeddingSource::Batched
+            );
+            assert_eq!(
+                stable_bytes(&response),
+                stable_bytes(&plain.query(request).await.unwrap())
+            );
+        }
     }
 
     #[tokio::test]
