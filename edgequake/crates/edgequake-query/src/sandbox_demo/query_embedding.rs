@@ -7,9 +7,10 @@
 //!
 //! - **Bounded.** LRU by entry count and by approximate bytes.
 //! - **Coalesced.** Identical cold questions arriving together share one
-//!   provider request. No lock is held across that await; waiters share a
-//!   future, and the future removes itself from the in-flight map when it
-//!   settles. Errors reach every waiter and are never cached.
+//!   provider request. No lock is held across that await; the request runs
+//!   as its own task, so a waiter going away neither cancels nor strands
+//!   it, and the task frees its in-flight slot on every exit. Errors reach
+//!   every waiter and are never cached.
 //! - **Rollback.** `EDGEQUAKE_SANDBOX_QUERY_EMBED_CACHE=0` restores the
 //!   original one-provider-call-per-query path exactly.
 
@@ -198,6 +199,19 @@ fn finish(mut vector: Vec<f32>, dim: usize) -> Outcome {
     Ok(vector.into())
 }
 
+/// Frees a key's in-flight slot on every exit of its provider task,
+/// including a panic.
+struct InFlightSlot {
+    inner: Arc<Inner>,
+    key: EmbedKey,
+}
+
+impl Drop for InFlightSlot {
+    fn drop(&mut self) {
+        self.inner.state().in_flight.remove(&self.key);
+    }
+}
+
 /// The engine's question embedder.
 pub(crate) struct QueryEmbedder {
     inner: Arc<Inner>,
@@ -257,17 +271,25 @@ impl QueryEmbedder {
         Ok((vector, source))
     }
 
-    /// One provider request for `key`, settling its own in-flight slot.
+    /// One provider request for `key`, run as its own task so it settles
+    /// (and frees its in-flight slot) even if every waiter goes away.
+    /// Must be called with the state lock held, before the slot is filled.
     fn call(&self, key: EmbedKey) -> InFlight {
         let inner = self.inner.clone();
-        async move {
+        let task = tokio::spawn(async move {
+            let _slot = InFlightSlot {
+                inner: inner.clone(),
+                key: key.clone(),
+            };
             let outcome = inner.fetch(&key.text).await;
-            let mut state = inner.state();
-            state.in_flight.remove(&key);
             if let Ok(vector) = &outcome {
-                state.insert(key, vector.clone(), &inner.config);
+                inner.state().insert(key, vector.clone(), &inner.config);
             }
             outcome
+        });
+        async move {
+            task.await
+                .unwrap_or_else(|e| Err(format!("question embedding task failed: {e}")))
         }
         .boxed()
         .shared()
@@ -278,10 +300,18 @@ impl QueryEmbedder {
         let state = self.inner.state();
         (state.entries.len(), state.bytes)
     }
+
+    #[cfg(test)]
+    fn in_flight(&self) -> usize {
+        self.inner.state().in_flight.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
     use super::*;
 
     use crate::sandbox_demo::engine::tests::CountingEmbedder;
@@ -342,6 +372,64 @@ mod tests {
         assert_eq!(source(&cache, &long).await, QueryEmbeddingSource::Miss);
         assert_eq!(source(&cache, &long).await, QueryEmbeddingSource::Miss);
         assert_eq!(source(&cache, "risk c").await, QueryEmbeddingSource::Hit);
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_cold_question_still_settles_and_is_cached() {
+        let provider = CountingEmbedder::stalling(50);
+        let cache = embedder(&provider, QueryEmbedConfig::default());
+        let abandoned =
+            tokio::time::timeout(Duration::from_millis(5), cache.embed("refused risk")).await;
+        assert!(abandoned.is_err(), "the first waiter is dropped mid-flight");
+        assert_eq!(cache.in_flight(), 1);
+
+        let (vector, joined) = cache.embed("refused risk").await.unwrap();
+        assert_eq!(joined, QueryEmbeddingSource::Coalesced);
+        assert_eq!(cache.in_flight(), 0);
+        assert_eq!(provider.calls(), 1);
+
+        let reference = CountingEmbedder::stalling(0);
+        let off = embedder(&reference, QueryEmbedConfig::disabled());
+        assert_eq!(&*vector, &*off.embed("refused risk").await.unwrap().0);
+        assert_eq!(
+            source(&cache, "refused risk").await,
+            QueryEmbeddingSource::Hit
+        );
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_cold_question_settles_without_any_waiter() {
+        let provider = CountingEmbedder::stalling(20);
+        let cache = embedder(&provider, QueryEmbedConfig::default());
+        let abandoned =
+            tokio::time::timeout(Duration::from_millis(5), cache.embed("permitted routine")).await;
+        assert!(abandoned.is_err());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(cache.in_flight(), 0);
+        assert_eq!(cache.cached_entries().0, 1);
+        assert_eq!(
+            source(&cache, "permitted routine").await,
+            QueryEmbeddingSource::Hit
+        );
+        assert_eq!(provider.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_provider_fails_its_waiters_without_poisoning_the_key() {
+        let provider = CountingEmbedder::stalling(0);
+        provider.panic_boom.store(true, Ordering::SeqCst);
+        let cache = embedder(&provider, QueryEmbedConfig::default());
+        let failed = cache.embed("boom risk").await;
+        assert!(matches!(failed, Err(SandboxDemoError::Embedding(_))));
+        assert_eq!(cache.in_flight(), 0);
+        assert_eq!(cache.cached_entries().0, 0);
+
+        provider.panic_boom.store(false, Ordering::SeqCst);
+        assert_eq!(
+            source(&cache, "boom risk").await,
+            QueryEmbeddingSource::Miss
+        );
+        assert_eq!(provider.calls(), 2);
     }
 
     #[tokio::test]

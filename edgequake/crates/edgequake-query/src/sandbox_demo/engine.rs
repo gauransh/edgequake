@@ -594,13 +594,15 @@ pub(crate) mod tests {
     }
 
     /// [`KeywordEmbedder`] that counts provider calls, can stall so
-    /// concurrent callers overlap, and can refuse texts containing `boom`.
+    /// concurrent callers overlap, and can refuse (or panic on) texts
+    /// containing `boom`.
     #[derive(Default)]
     pub(crate) struct CountingEmbedder {
         pub(crate) calls: std::sync::atomic::AtomicUsize,
         pub(crate) batch_sizes: std::sync::Mutex<Vec<usize>>,
         pub(crate) delay_ms: u64,
         pub(crate) fail_boom: std::sync::atomic::AtomicBool,
+        pub(crate) panic_boom: std::sync::atomic::AtomicBool,
     }
 
     impl CountingEmbedder {
@@ -636,9 +638,11 @@ pub(crate) mod tests {
             if self.delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             }
-            if self.fail_boom.load(std::sync::atomic::Ordering::SeqCst)
-                && texts.iter().any(|t| t.contains("boom"))
-            {
+            let boom = texts.iter().any(|t| t.contains("boom"));
+            if boom && self.panic_boom.load(std::sync::atomic::Ordering::SeqCst) {
+                panic!("provider panicked");
+            }
+            if boom && self.fail_boom.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(LlmError::Unknown("provider is down".into()));
             }
             KeywordEmbedder.embed(texts).await
