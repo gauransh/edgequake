@@ -36,10 +36,11 @@ use tracing::info;
 
 use super::documents::resource_document;
 use super::error::{Result, SandboxDemoError};
+use super::query_embedding::{QueryEmbedConfig, QueryEmbedder};
 use super::snapshot::{SandboxSnapshotIndex, AGENT_TYPE, INITIATED};
 use super::types::{
-    AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,
-    SandboxDemoResponse, SandboxDemoResult, SemanticOrderEntry, StageTimings, MAX_CANDIDATE_K,
+    AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,
+    SandboxDemoResult, SemanticOrderEntry, StageTimings, MAX_CANDIDATE_K,
 };
 
 /// Environment variable naming the activation bundle directory. When it is
@@ -49,7 +50,6 @@ pub const PACK_DIR_ENV: &str = "EDGEQUAKE_SANDBOX_PACK_DIR";
 /// A loaded sandbox demo generation.
 pub struct SandboxDemoQueryEngine {
     index: Arc<SandboxSnapshotIndex>,
-    embedding: Arc<dyn EmbeddingProvider>,
     graph_core: Arc<EmbeddedGraphCoreRuntime>,
 
     /// Node index of each embedded resource, parallel to [`Self::vectors`].
@@ -59,6 +59,7 @@ pub struct SandboxDemoQueryEngine {
     dim: usize,
     embedding_model: String,
     pack_dir: PathBuf,
+    query_embedder: QueryEmbedder,
 }
 
 impl std::fmt::Debug for SandboxDemoQueryEngine {
@@ -81,7 +82,7 @@ fn read(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// L2-normalize in place; a zero vector stays zero (cosine 0, neutral).
-fn normalize(vector: &mut [f32]) {
+pub(crate) fn normalize(vector: &mut [f32]) {
     let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
     if norm > f32::EPSILON {
         for value in vector.iter_mut() {
@@ -101,6 +102,16 @@ impl SandboxDemoQueryEngine {
     /// queries with: the demo's semantic scores are real EdgeQuake
     /// embeddings, not a fabricated score ladder.
     pub async fn load(pack_dir: &Path, embedding: Arc<dyn EmbeddingProvider>) -> Result<Self> {
+        Self::load_with(pack_dir, embedding, QueryEmbedConfig::from_env()).await
+    }
+
+    /// [`Self::load`] with explicit query-embedding tuning instead of the
+    /// environment's.
+    pub async fn load_with(
+        pack_dir: &Path,
+        embedding: Arc<dyn EmbeddingProvider>,
+        query_embed: QueryEmbedConfig,
+    ) -> Result<Self> {
         let graph_core = Arc::new(EmbeddedGraphCoreRuntime::load_dir(pack_dir)?);
         let activation = graph_core.activation();
 
@@ -177,18 +188,25 @@ impl SandboxDemoQueryEngine {
             resources = resource_nodes.len(),
             embedding_model = embedding.model(),
             embed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            query_embed_cache_entries = query_embed.cache_entries,
             "sandbox demo pack loaded; graph-core is mandatory on this path"
         );
 
+        let query_embedder = QueryEmbedder::new(
+            embedding.clone(),
+            dim,
+            &activation.workspace_id,
+            query_embed,
+        );
         Ok(Self {
             embedding_model: embedding.model().to_string(),
             index: Arc::new(index),
-            embedding,
             graph_core,
             resource_nodes,
             vectors,
             dim,
             pack_dir: pack_dir.to_path_buf(),
+            query_embedder,
         })
     }
 
@@ -264,28 +282,6 @@ impl SandboxDemoQueryEngine {
         }
     }
 
-    /// Embed the question and return it L2-normalized at the index's
-    /// dimension.
-    async fn embed_question(&self, text: &str) -> Result<(Vec<f32>, QueryEmbeddingSource)> {
-        let mut question = self
-            .embedding
-            .embed_batched(&[text.to_string()])
-            .await
-            .map_err(|e| SandboxDemoError::Embedding(e.to_string()))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| SandboxDemoError::Embedding("provider returned no vector".into()))?;
-        if question.len() != self.dim {
-            return Err(SandboxDemoError::Embedding(format!(
-                "question embedded to {} dimensions, the index is {}",
-                question.len(),
-                self.dim
-            )));
-        }
-        normalize(&mut question);
-        Ok((question, QueryEmbeddingSource::Miss))
-    }
-
     /// Run one sandbox demo query.
     pub async fn query(&self, request: &SandboxDemoRequest) -> Result<SandboxDemoResponse> {
         let total_started = Instant::now();
@@ -335,7 +331,7 @@ impl SandboxDemoQueryEngine {
 
         // 1-2. embed the question, retrieve by semantic cosine ------------
         let semantic_started = Instant::now();
-        let (question, query_embedding) = self.embed_question(&request.query).await?;
+        let (question, query_embedding) = self.query_embedder.embed(&request.query).await?;
         let provider_embed_ms = ms_since(semantic_started);
 
         let scan_started = Instant::now();
@@ -523,7 +519,7 @@ impl SandboxDemoQueryEngine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::f32::consts::FRAC_1_SQRT_2;
@@ -534,7 +530,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::sandbox_demo::snapshot::sha256_hex;
-    use crate::sandbox_demo::types::{DEFAULT_CANDIDATE_K, DEFAULT_TOP_K};
+    use crate::sandbox_demo::types::{QueryEmbeddingSource, DEFAULT_CANDIDATE_K, DEFAULT_TOP_K};
 
     /// A deterministic keyword embedder: each dimension is the (scaled)
     /// count of one probe word in the text. It is not a language model,
@@ -577,6 +573,58 @@ mod tests {
                         .collect()
                 })
                 .collect())
+        }
+    }
+
+    /// [`KeywordEmbedder`] that counts provider calls, can stall so
+    /// concurrent callers overlap, and can refuse texts containing `boom`.
+    #[derive(Default)]
+    pub(crate) struct CountingEmbedder {
+        pub(crate) calls: std::sync::atomic::AtomicUsize,
+        pub(crate) batch_sizes: std::sync::Mutex<Vec<usize>>,
+        pub(crate) delay_ms: u64,
+        pub(crate) fail_boom: std::sync::atomic::AtomicBool,
+    }
+
+    impl CountingEmbedder {
+        pub(crate) fn stalling(delay_ms: u64) -> Arc<Self> {
+            Arc::new(Self {
+                delay_ms,
+                ..Self::default()
+            })
+        }
+
+        pub(crate) fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl EmbeddingProvider for CountingEmbedder {
+        fn name(&self) -> &str {
+            KeywordEmbedder.name()
+        }
+        fn model(&self) -> &str {
+            KeywordEmbedder.model()
+        }
+        fn dimension(&self) -> usize {
+            KeywordEmbedder.dimension()
+        }
+        fn max_tokens(&self) -> usize {
+            KeywordEmbedder.max_tokens()
+        }
+        async fn embed(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, LlmError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.batch_sizes.lock().unwrap().push(texts.len());
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
+            if self.fail_boom.load(std::sync::atomic::Ordering::SeqCst)
+                && texts.iter().any(|t| t.contains("boom"))
+            {
+                return Err(LlmError::Unknown("provider is down".into()));
+            }
+            KeywordEmbedder.embed(texts).await
         }
     }
 
@@ -946,6 +994,184 @@ mod tests {
             t.provider_embed_ms + t.semantic_scan_ms + t.candidate_select_ms
                 <= response.semantic_latency_ms
         );
+    }
+
+    async fn counting_engine(
+        dir: &TempDir,
+        embedder: &Arc<CountingEmbedder>,
+        config: QueryEmbedConfig,
+    ) -> SandboxDemoQueryEngine {
+        let provider: Arc<dyn EmbeddingProvider> = embedder.clone();
+        SandboxDemoQueryEngine::load_with(dir.path(), provider, config)
+            .await
+            .unwrap()
+    }
+
+    fn question(text: &str) -> SandboxDemoRequest {
+        SandboxDemoRequest {
+            query: text.into(),
+            ..hero_query()
+        }
+    }
+
+    /// The response as bytes, minus every wall-clock field.
+    fn stable_bytes(response: &SandboxDemoResponse) -> String {
+        let mut value = serde_json::to_value(response).unwrap();
+        let object = value.as_object_mut().unwrap();
+        for field in [
+            "timings",
+            "graph_core_latency_ms",
+            "semantic_latency_ms",
+            "total_latency_ms",
+        ] {
+            object.remove(field);
+        }
+        serde_json::to_string(&value).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_repeated_question_is_answered_without_the_provider() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = counting_engine(&dir, &embedder, QueryEmbedConfig::default()).await;
+        let after_prewarm = embedder.calls();
+        assert_eq!(after_prewarm, 1, "the documents are prewarmed in one batch");
+
+        let cold = engine.query(&hero_query()).await.unwrap();
+        assert_eq!(cold.timings.query_embedding, QueryEmbeddingSource::Miss);
+        assert_eq!(embedder.calls(), after_prewarm + 1);
+
+        let warm = engine.query(&hero_query()).await.unwrap();
+        assert_eq!(warm.timings.query_embedding, QueryEmbeddingSource::Hit);
+        assert_eq!(
+            embedder.calls(),
+            after_prewarm + 1,
+            "a hit must not call out"
+        );
+        assert_eq!(stable_bytes(&cold), stable_bytes(&warm));
+
+        // Whitespace is part of the text sent to the provider, so it is
+        // part of the key.
+        let spaced = engine
+            .query(&question(&format!("{} ", hero_query().query)))
+            .await;
+        assert_eq!(
+            spaced.unwrap().timings.query_embedding,
+            QueryEmbeddingSource::Miss
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_cache_is_the_original_one_call_per_query_path() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = counting_engine(&dir, &embedder, QueryEmbedConfig::disabled()).await;
+        for _ in 0..3 {
+            let response = engine.query(&hero_query()).await.unwrap();
+            assert_eq!(response.timings.query_embedding, QueryEmbeddingSource::Miss);
+        }
+        assert_eq!(embedder.calls(), 1 + 3);
+    }
+
+    #[tokio::test]
+    async fn the_cache_does_not_change_a_single_answer_byte() {
+        let dir = write_pack(&snapshot_json());
+        let on = counting_engine(
+            &dir,
+            &CountingEmbedder::stalling(0),
+            QueryEmbedConfig::default(),
+        )
+        .await;
+        let off = counting_engine(
+            &dir,
+            &CountingEmbedder::stalling(0),
+            QueryEmbedConfig::disabled(),
+        )
+        .await;
+        let questions = [
+            hero_query(),
+            question("routine permitted file_open_read_only"),
+            SandboxDemoRequest {
+                anchor_external_id: "agent:codex-demo".into(),
+                candidate_k: 3,
+                top_k: 2,
+                ..hero_query()
+            },
+        ];
+        for _ in 0..2 {
+            for request in &questions {
+                let a = on.query(request).await.unwrap();
+                let b = off.query(request).await.unwrap();
+                assert_eq!(stable_bytes(&a), stable_bytes(&b));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn identical_cold_questions_share_one_provider_call() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(25);
+        let engine = counting_engine(&dir, &embedder, QueryEmbedConfig::default()).await;
+        let before = embedder.calls();
+
+        let request = hero_query();
+        let responses = futures::future::join_all((0..8).map(|_| engine.query(&request))).await;
+        assert_eq!(embedder.calls(), before + 1, "eight waiters, one request");
+
+        let responses: Vec<SandboxDemoResponse> =
+            responses.into_iter().map(|r| r.unwrap()).collect();
+        let sources: Vec<QueryEmbeddingSource> = responses
+            .iter()
+            .map(|r| r.timings.query_embedding)
+            .collect();
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|s| **s == QueryEmbeddingSource::Miss)
+                .count(),
+            1
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|s| **s == QueryEmbeddingSource::Coalesced)
+                .count(),
+            7
+        );
+        let first = stable_bytes(&responses[0]);
+        assert!(responses.iter().all(|r| stable_bytes(r) == first));
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_reaches_every_waiter_and_is_not_cached() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(25);
+        let engine = counting_engine(&dir, &embedder, QueryEmbedConfig::default()).await;
+        let before = embedder.calls();
+        embedder
+            .fail_boom
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let request = question("boom: refused risk");
+        let failures = futures::future::join_all((0..4).map(|_| engine.query(&request))).await;
+        assert_eq!(embedder.calls(), before + 1);
+        for failure in failures {
+            let err = failure.unwrap_err();
+            assert!(
+                matches!(&err, SandboxDemoError::Embedding(m) if m.contains("provider is down")),
+                "every waiter must see the provider error, got {err:?}"
+            );
+        }
+
+        embedder
+            .fail_boom
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let recovered = engine.query(&request).await.unwrap();
+        assert_eq!(
+            recovered.timings.query_embedding,
+            QueryEmbeddingSource::Miss
+        );
+        assert_eq!(embedder.calls(), before + 2, "the error was not memoized");
     }
 
     #[test]
