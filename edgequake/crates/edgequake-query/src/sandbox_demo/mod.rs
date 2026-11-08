@@ -28,16 +28,22 @@
 pub mod documents;
 pub mod engine;
 pub mod error;
+pub mod query_embedding;
 pub mod snapshot;
 pub mod types;
 
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
 pub use error::{Result, SandboxDemoError};
+pub use query_embedding::{
+    QueryEmbedConfig, DEFAULT_QUERY_EMBED_CACHE_BYTES, DEFAULT_QUERY_EMBED_CACHE_ENTRIES,
+    QUERY_EMBED_CACHE_BYTES_ENV, QUERY_EMBED_CACHE_ENV,
+};
 pub use snapshot::{
     EvidencePath, GraphNode, GraphProjection, ResourceProfile, SandboxSnapshotIndex, SnapshotEdge,
     SnapshotNode,
 };
 pub use types::{
-    AnchorInfo, AppliedWeights, EvidenceSummary, SandboxDemoRequest, SandboxDemoResponse,
-    SandboxDemoResult, SemanticOrderEntry, DEFAULT_CANDIDATE_K, DEFAULT_TOP_K, MAX_CANDIDATE_K,
+    AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,
+    SandboxDemoResponse, SandboxDemoResult, SemanticOrderEntry, StageTimings, DEFAULT_CANDIDATE_K,
+    DEFAULT_TOP_K, MAX_CANDIDATE_K,
 };
