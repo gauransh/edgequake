@@ -91,6 +91,24 @@ pub(crate) fn normalize(vector: &mut [f32]) {
     }
 }
 
+/// The first `k` of `scored` in exactly the order a stable full sort by
+/// `cmp` would give, without ordering the rest. Ties `cmp` leaves are
+/// broken on scan position, which is what stability preserved.
+fn top_k_by<F>(mut scored: Vec<(usize, f32)>, k: usize, mut cmp: F) -> Vec<(usize, f32)>
+where
+    F: FnMut(&(usize, f32), &(usize, f32)) -> std::cmp::Ordering,
+{
+    let mut cmp = |a: &(usize, f32), b: &(usize, f32)| cmp(a, b).then(a.0.cmp(&b.0));
+    if k == 0 {
+        scored.clear();
+    } else if k < scored.len() {
+        scored.select_nth_unstable_by(k - 1, &mut cmp);
+        scored.truncate(k);
+    }
+    scored.sort_unstable_by(cmp);
+    scored
+}
+
 fn ms_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
@@ -336,7 +354,7 @@ impl SandboxDemoQueryEngine {
         let provider_embed_ms = ms_since(semantic_started);
 
         let scan_started = Instant::now();
-        let mut scored: Vec<(usize, f32)> = (0..self.resource_nodes.len())
+        let scored: Vec<(usize, f32)> = (0..self.resource_nodes.len())
             .map(|position| {
                 let cosine: f32 = question
                     .iter()
@@ -352,7 +370,7 @@ impl SandboxDemoQueryEngine {
         let select_started = Instant::now();
         // Descending cosine, ties broken on external id so warm runs are
         // byte-identical.
-        scored.sort_by(|a, b| {
+        let scored = top_k_by(scored, request.candidate_k, |a, b| {
             b.1.total_cmp(&a.1).then_with(|| {
                 self.index
                     .node(self.resource_nodes[a.0])
@@ -360,7 +378,6 @@ impl SandboxDemoQueryEngine {
                     .cmp(&self.index.node(self.resource_nodes[b.0]).external_id)
             })
         });
-        scored.truncate(request.candidate_k);
         let candidate_select_ms = ms_since(select_started);
         let semantic_latency_ms = ms_since(semantic_started);
 
@@ -1215,6 +1232,46 @@ pub(crate) mod tests {
             QueryEmbeddingSource::Miss
         );
         assert_eq!(embedder.calls(), before + 2, "the error was not memoized");
+    }
+
+    #[test]
+    fn partial_top_k_matches_a_full_stable_sort_including_ties() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..500 {
+            let n = (next() % 80) as usize;
+            // Few distinct scores and few distinct ids, so both tie levels
+            // are exercised; -0.0/0.0 and duplicates included.
+            let ids: Vec<String> = (0..n).map(|_| format!("r{}", next() % 6)).collect();
+            let scored: Vec<(usize, f32)> = (0..n)
+                .map(|p| {
+                    let score = match next() % 5 {
+                        0 => 0.0,
+                        1 => -0.0,
+                        r => (r as f32 - 3.0) * 0.25,
+                    };
+                    (p, score)
+                })
+                .collect();
+            let cmp = |a: &(usize, f32), b: &(usize, f32)| {
+                b.1.total_cmp(&a.1).then_with(|| ids[a.0].cmp(&ids[b.0]))
+            };
+            for k in [0, 1, 2, n / 2, n.saturating_sub(1), n, n + 3] {
+                let mut full = scored.clone();
+                full.sort_by(cmp);
+                full.truncate(k);
+                let partial = top_k_by(scored.clone(), k, cmp);
+                let bits = |v: &[(usize, f32)]| -> Vec<(usize, u32)> {
+                    v.iter().map(|(p, s)| (*p, s.to_bits())).collect()
+                };
+                assert_eq!(bits(&partial), bits(&full), "round {round}, n {n}, k {k}");
+            }
+        }
     }
 
     #[test]
