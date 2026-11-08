@@ -52,7 +52,8 @@ pub struct AnchorInfo {
     pub run_count: usize,
 }
 
-/// The frozen blend weights actually applied.
+/// The blend weights actually applied: the default `semantic=1,
+/// structural=0`, the bundle's frozen weights, or an explicit override.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AppliedWeights {
     /// Weight on the EdgeQuake semantic score.
@@ -148,7 +149,7 @@ pub struct SandboxDemoResponse {
     pub snapshot_revision: String,
     /// SHA-256 of the indexed `snapshot.json`.
     pub snapshot_sha256: String,
-    /// The frozen weights.
+    /// The weights actually applied.
     pub weights: AppliedWeights,
     /// Embedding model that produced the semantic scores.
     pub embedding_model: String,
@@ -172,9 +173,10 @@ pub struct SandboxDemoResponse {
     pub timings: StageTimings,
     /// The opt-in structural scorer, e.g. `popularity` or
     /// `blend:knn=0.5,popularity=0.5`. Present only when
-    /// `EDGEQUAKE_SANDBOX_STRUCTURAL_SCORER` or
-    /// `EDGEQUAKE_SANDBOX_BLEND_WEIGHTS` was set, so the default response
-    /// is byte-identical to before the knob existed.
+    /// `EDGEQUAKE_SANDBOX_STRUCTURAL_SCORER` or explicit
+    /// `EDGEQUAKE_SANDBOX_BLEND_WEIGHTS` were set (`bundle` alone does not
+    /// count), so the `bundle` response is byte-identical to before the
+    /// knob existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structural_scorer: Option<String>,
     /// The graph-core-approved order, truncated to `top_k`.

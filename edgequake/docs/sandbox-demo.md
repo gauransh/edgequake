@@ -64,7 +64,8 @@ EdgeQuake's original order stands, because a user's query must never fail on
 evidence that is only meant to help.
 
 This path makes the opposite promise. The claim being demonstrated is that the
-final ordering is *necessarily* graph-core's, so:
+final ordering is *necessarily* produced by graph-core's blend (under the default
+weights that blend is semantic-only — see [Scoring](#scoring)), so:
 
 * the runtime is `itsm_graph_core::serving::embedded_runtime`, linked into this
   binary — no graph-core HTTP, S3, S3 Vectors, or DynamoDB call happens after
@@ -112,14 +113,33 @@ appear often.
 
 ## Scoring
 
-| component | source | weight (frozen in `activation.json`) |
-|---|---|---|
-| semantic | EdgeQuake's configured embedding provider, cosine mapped to `[0,1]` | 0.60 |
-| structural | graph-core anchor↔candidate cosine over the trained entity matrix | 0.40 |
-| graph | — | 0.00 |
-| link | not part of this path | 0.00 |
+| component | source | default weight | `bundle` weight (frozen in `activation.json`) |
+|---|---|---|---|
+| semantic | EdgeQuake's configured embedding provider, cosine mapped to `[0,1]` | 1.00 | 0.60 |
+| structural | graph-core anchor↔candidate cosine over the trained entity matrix | 0.00 | 0.40 |
+| graph | — | 0.00 | 0.00 |
+| link | not part of this path | 0.00 | 0.00 |
 
-Weights are per-bundle, never per query. `final_score = 0.6·semantic + 0.4·structural`.
+Weights are per-process, never per query. The default is
+`final_score = 1.0·semantic + 0.0·structural`: on a pre-registered gold
+relevance set, semantic-only ranking beat the bundle's `0.6 / 0.4` blend by
++0.113 nDCG@5 on holdout (95% CI `[+0.030, +0.214]`), and no structural arm tried
+beat semantic-only (crystalos-ai/itsm-graph-core #226/#227). graph-core still
+loads, passes every startup gate, and reranks every query; `structural_score` is
+still computed and returned for transparency, and `graph_core_applied` is still
+`true`. Only its blend weight is zero.
+
+`EDGEQUAKE_SANDBOX_BLEND_WEIGHTS` selects the weights:
+
+| value | weights | logged `weights_source` |
+|---|---|---|
+| unset / blank | `semantic=1.0, structural=0.0` | `default` |
+| `bundle` | the bundle's frozen weights — the runtime's own rerank, byte-identical to the pre-default response (the rollback switch) | `bundle` |
+| `semantic=<w>,structural=<w>` | those, each `>= 0`, summing to ~1 | `env` |
+
+The response's `weights` and the manifest's `weights` are the ones applied.
+`EDGEQUAKE_SANDBOX_STRUCTURAL_SCORER` (`cosine` default) picks the structural
+evidence and is independent of the weights.
 
 `semantic_score` is `(cosine + 1) / 2` because the blend contract is unit-range;
 the raw cosine is also returned as `semantic_cosine`.

@@ -8,7 +8,7 @@
 //!   -> EdgeQuake embeds one document per governed resource and retrieves
 //!      semantic candidates
 //!   -> the EMBEDDED graph-core runtime reranks them in this same process
-//!   -> EdgeQuake returns the graph-core-approved order, a score breakdown,
+//!   -> EdgeQuake returns the graph-core-blended order, a score breakdown,
 //!      an evidence path, and the latency
 //! ```
 //!
@@ -18,6 +18,12 @@
 //! response always carries `graph_core_applied: true` because no other
 //! response can be produced. There is no semantic-only fallback and no
 //! switch that disables the reranker.
+//!
+//! The default blend weights are `semantic=1.0, structural=0.0`: a gold
+//! relevance evaluation found semantic-only ranking beats the bundle's
+//! frozen `0.6 / 0.4` blend. The reranker still runs and its structural
+//! score is still returned; `EDGEQUAKE_SANDBOX_BLEND_WEIGHTS=bundle`
+//! restores the frozen weights. See [`structural`].
 //!
 //! This is a focused query adapter, not a storage migration. The same
 //! [`itsm_graph_core::serving::embedded_runtime::EmbeddedGraphCoreRuntime`]
@@ -44,8 +50,8 @@ pub use snapshot::{
     SnapshotNode,
 };
 pub use structural::{
-    ScorerKind, ScoringConfig, StructuralScorer, WeightOverride, BLEND_WEIGHTS_ENV,
-    STRUCTURAL_SCORER_ENV,
+    BlendWeightsChoice, ScorerKind, ScoringConfig, StructuralScorer, WeightOverride,
+    BLEND_WEIGHTS_ENV, BUNDLE_WEIGHTS, STRUCTURAL_SCORER_ENV,
 };
 pub use types::{
     AnchorInfo, AppliedWeights, EvidenceSummary, QueryEmbeddingSource, SandboxDemoRequest,

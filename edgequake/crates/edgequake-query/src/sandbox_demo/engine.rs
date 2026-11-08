@@ -241,11 +241,11 @@ impl SandboxDemoQueryEngine {
         let applied = Self::applied_weights(&scoring, graph_core.weights());
         info!(
             structural_scorer = %scoring.scorer.label(),
-            weights_source = if scoring.weights.is_some() { "override" } else { "bundle" },
+            weights_source = scoring.weights.source(),
             semantic_weight = applied.semantic,
             structural_weight = applied.structural,
-            default_scoring = scoring.is_default(),
-            "sandbox demo structural scorer active"
+            runtime_rerank = scoring.is_runtime_rerank(),
+            "sandbox demo blend weights active"
         );
 
         let query_embedder = QueryEmbedder::new(
@@ -440,8 +440,8 @@ impl SandboxDemoQueryEngine {
         let reranked =
             self.graph_core
                 .rerank(&request.anchor_external_id, candidates, scored.len())?;
-        // Default scoring is the runtime's answer, untouched.
-        let reranked = if self.scoring.is_default() {
+        // `bundle` with the cosine scorer is the runtime's answer, untouched.
+        let reranked = if self.scoring.is_runtime_rerank() {
             reranked
         } else {
             self.rescore(anchor, &scored, reranked)?
@@ -586,10 +586,21 @@ impl SandboxDemoQueryEngine {
         &self.index.node(self.resource_nodes[position]).external_id
     }
 
-    /// The bundle's frozen weights, or the override with the components
+    /// The blend weights every query applies.
+    pub fn blend_weights(&self) -> AppliedWeights {
+        let w = Self::applied_weights(&self.scoring, self.graph_core.weights());
+        AppliedWeights {
+            semantic: w.semantic,
+            graph: w.graph,
+            structural: w.structural,
+            link: w.link,
+        }
+    }
+
+    /// The bundle's frozen weights, or the chosen pair with the components
     /// this path never supplies zeroed.
     fn applied_weights(scoring: &ScoringConfig, bundle: &BlendWeights) -> BlendWeights {
-        match scoring.weights {
+        match scoring.weights.weights() {
             Some(w) => BlendWeights {
                 semantic: w.semantic,
                 graph: 0.0,
@@ -1081,9 +1092,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn structure_reorders_the_semantic_candidates() {
+        // The bundle's 0.6 / 0.4 blend, restored by `bundle`; the default is
+        // semantic-only (see `unset_weights_rank_in_pure_semantic_order`).
         let snapshot = snapshot_json();
         let dir = write_pack(&snapshot);
-        let engine = engine(&dir).await.unwrap();
+        let engine = scored_engine(&dir, None, Some("bundle")).await;
 
         let response = engine.query(&hero_query()).await.unwrap();
         assert!(response.graph_core_applied);
@@ -1642,10 +1655,109 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn unset_scoring_is_the_runtimes_rerank_byte_for_byte() {
+    async fn unset_weights_rank_in_pure_semantic_order() {
         let dir = write_pack(&scorer_snapshot_json());
-        let default = scored_engine(&dir, None, None).await;
+        let engine = scored_engine(&dir, None, None).await;
+        let response = engine.query(&hero_query()).await.unwrap();
+
+        // graph-core still ran; only its blend weight is zero.
+        assert!(response.graph_core_applied);
+        assert_eq!(response.weights.semantic, 1.0);
+        assert_eq!(response.weights.structural, 0.0);
+        assert_eq!(response.weights.graph, 0.0);
+        assert_eq!(response.weights.link, 0.0);
+        let blend = engine.blend_weights();
+        assert_eq!((blend.semantic, blend.structural), (1.0, 0.0));
+        let wire = serde_json::to_value(&response).unwrap();
+        assert!(wire.get("structural_scorer").is_none(), "{wire}");
+
+        let semantic_ids: Vec<&str> = response
+            .semantic_order
+            .iter()
+            .map(|e| e.external_id.as_str())
+            .collect();
+        let final_ids: Vec<&str> = response
+            .results
+            .iter()
+            .map(|r| r.external_id.as_str())
+            .collect();
+        assert_eq!(final_ids, semantic_ids[..final_ids.len()]);
+        assert_blended(&response, 1.0, 0.0);
+
+        // The runtime's structural scores are still returned, untouched.
+        let candidates = response
+            .semantic_order
+            .iter()
+            .map(|e| ExternalCandidate::new(e.external_id.clone(), (e.semantic_cosine + 1.0) / 2.0))
+            .collect();
+        let runtime = engine
+            .graph_core()
+            .rerank("agent:claude-code-demo", candidates, 5)
+            .unwrap();
+        let expected: std::collections::BTreeMap<String, f32> = runtime
+            .candidates
+            .iter()
+            .map(|c| (c.external_id.clone(), c.structural_score.unwrap()))
+            .collect();
+        assert_eq!(structural_by_id(&response), expected);
+
+        // On the hero fixture the bundle blend reorders; the default does not.
+        let dir = write_pack(&snapshot_json());
+        let hero = scored_engine(&dir, None, None)
+            .await
+            .query(&hero_query())
+            .await
+            .unwrap();
+        let semantic_ids: Vec<&str> = hero
+            .semantic_order
+            .iter()
+            .map(|e| e.external_id.as_str())
+            .collect();
+        let final_ids: Vec<&str> = hero
+            .results
+            .iter()
+            .map(|r| r.external_id.as_str())
+            .collect();
+        assert_eq!(final_ids, semantic_ids[..final_ids.len()]);
+        let bundle = scored_engine(&dir, None, Some("bundle"))
+            .await
+            .query(&hero_query())
+            .await
+            .unwrap();
+        let bundle_ids: Vec<&str> = bundle
+            .results
+            .iter()
+            .map(|r| r.external_id.as_str())
+            .collect();
+        assert_ne!(
+            bundle_ids, final_ids,
+            "the fixture must tell the blends apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundle_reproduces_the_pre_default_response_byte_for_byte() {
+        // Captured from the pre-change default (bundle weights, runtime
+        // rerank untouched) on the hero fixture, before the default moved.
+        let golden = include_str!("testdata/bundle_hero_response.json");
+        let dir = write_pack(&snapshot_json());
+        let response = scored_engine(&dir, None, Some("bundle"))
+            .await
+            .query(&hero_query())
+            .await
+            .unwrap();
+        assert_eq!(stable_bytes(&response), golden.trim_end());
+    }
+
+    #[tokio::test]
+    async fn bundle_is_the_runtimes_rerank_byte_for_byte() {
+        let dir = write_pack(&scorer_snapshot_json());
+        let default = scored_engine(&dir, None, Some("bundle")).await;
         let response = default.query(&hero_query()).await.unwrap();
+        assert_eq!(response.weights.semantic, 0.6);
+        assert_eq!(response.weights.structural, 0.4);
+        let blend = default.blend_weights();
+        assert_eq!((blend.semantic, blend.structural), (0.6, 0.4));
 
         // The scorer field is absent, so the wire shape is the old one.
         let wire = serde_json::to_value(&response).unwrap();
@@ -1680,7 +1792,7 @@ pub(crate) mod tests {
         assert_eq!(got, expected);
 
         // Explicit cosine, and re-blending through the opt-in path with the
-        // bundle's own weights, both reproduce the default exactly; only the
+        // bundle's own weights, both reproduce `bundle` exactly; only the
         // echoed scorer name is new.
         let strip = |r: &SandboxDemoResponse| {
             let mut v: serde_json::Value = serde_json::from_str(&stable_bytes(r)).unwrap();
@@ -1688,7 +1800,7 @@ pub(crate) mod tests {
             v.to_string()
         };
         for (scorer, weights) in [
-            (Some("cosine"), None),
+            (Some("cosine"), Some("bundle")),
             (None, Some("semantic=0.6,structural=0.4")),
         ] {
             let engine = scored_engine(&dir, scorer, weights).await;
@@ -1701,7 +1813,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn popularity_is_run_count_min_maxed_over_every_resource() {
         let dir = write_pack(&scorer_snapshot_json());
-        let response = scored_engine(&dir, Some("popularity"), None)
+        let response = scored_engine(&dir, Some("popularity"), Some("bundle"))
             .await
             .query(&hero_query())
             .await
@@ -1723,7 +1835,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn agent_frequency_counts_only_the_anchors_runs() {
         let dir = write_pack(&scorer_snapshot_json());
-        let response = scored_engine(&dir, Some("agent_frequency"), None)
+        let response = scored_engine(&dir, Some("agent_frequency"), Some("bundle"))
             .await
             .query(&hero_query())
             .await
@@ -1744,7 +1856,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn knn_is_the_mean_structural_score_against_the_anchors_resources() {
         let dir = write_pack(&scorer_snapshot_json());
-        let response = scored_engine(&dir, Some("knn"), None)
+        let response = scored_engine(&dir, Some("knn"), Some("bundle"))
             .await
             .query(&hero_query())
             .await
@@ -1784,7 +1896,7 @@ pub(crate) mod tests {
         assert_blended(&response, 0.6, 0.4);
 
         // An anchor whose runs touched nothing has no neighbours: all zero.
-        let lonely = scored_engine(&dir, Some("knn"), None)
+        let lonely = scored_engine(&dir, Some("knn"), Some("bundle"))
             .await
             .query(&SandboxDemoRequest {
                 anchor_external_id: "outcome:completed".into(),
@@ -1798,11 +1910,15 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_blend_mixes_min_maxed_sources_over_the_candidates() {
         let dir = write_pack(&scorer_snapshot_json());
-        let response = scored_engine(&dir, Some("blend:popularity=0.5,agent_frequency=0.5"), None)
-            .await
-            .query(&hero_query())
-            .await
-            .unwrap();
+        let response = scored_engine(
+            &dir,
+            Some("blend:popularity=0.5,agent_frequency=0.5"),
+            Some("bundle"),
+        )
+        .await
+        .query(&hero_query())
+        .await
+        .unwrap();
         assert_eq!(
             response.structural_scorer.as_deref(),
             Some("blend:popularity=0.5,agent_frequency=0.5")
