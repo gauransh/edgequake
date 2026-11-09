@@ -40,6 +40,7 @@ use itsm_graph_core::serving::embedded_runtime::{
 use tracing::info;
 
 use super::documents::resource_document;
+use super::embed_prefix::EmbedPrefix;
 use super::error::{Result, SandboxDemoError};
 use super::intent::{spread_matched, IntentConfig, IntentRouting};
 use super::query_embedding::{QueryEmbedConfig, QueryEmbedder};
@@ -69,6 +70,7 @@ pub struct SandboxDemoQueryEngine {
     query_embedder: QueryEmbedder,
     scoring: ScoringConfig,
     intent: IntentConfig,
+    prefix: EmbedPrefix,
     /// Distinct runs touching each resource, parallel to
     /// [`Self::resource_nodes`].
     run_sets: Vec<BTreeSet<u32>>,
@@ -85,6 +87,7 @@ impl std::fmt::Debug for SandboxDemoQueryEngine {
             .field("resources", &self.resource_nodes.len())
             .field("embedding_model", &self.embedding_model)
             .field("structural_scorer", &self.scoring.scorer.label())
+            .field("embed_prefix", &self.prefix.label())
             .finish()
     }
 }
@@ -145,12 +148,13 @@ impl SandboxDemoQueryEngine {
         embedding: Arc<dyn EmbeddingProvider>,
         query_embed: QueryEmbedConfig,
     ) -> Result<Self> {
-        Self::load_with_intent(
+        Self::load_with_prefix(
             pack_dir,
             embedding,
             query_embed,
             ScoringConfig::from_env()?,
             IntentConfig::from_env()?,
+            EmbedPrefix::from_env()?,
         )
         .await
     }
@@ -173,13 +177,34 @@ impl SandboxDemoQueryEngine {
         .await
     }
 
-    /// [`Self::load_with_scoring`] with explicit intent routing.
+    /// [`Self::load_with_scoring`] with explicit intent routing and no
+    /// embedding prefix.
     pub async fn load_with_intent(
         pack_dir: &Path,
         embedding: Arc<dyn EmbeddingProvider>,
         query_embed: QueryEmbedConfig,
         scoring: ScoringConfig,
         intent: IntentConfig,
+    ) -> Result<Self> {
+        Self::load_with_prefix(
+            pack_dir,
+            embedding,
+            query_embed,
+            scoring,
+            intent,
+            EmbedPrefix::None,
+        )
+        .await
+    }
+
+    /// [`Self::load_with_intent`] with an explicit embedding prefix.
+    pub async fn load_with_prefix(
+        pack_dir: &Path,
+        embedding: Arc<dyn EmbeddingProvider>,
+        query_embed: QueryEmbedConfig,
+        scoring: ScoringConfig,
+        intent: IntentConfig,
+        prefix: EmbedPrefix,
     ) -> Result<Self> {
         let graph_core = Arc::new(EmbeddedGraphCoreRuntime::load_dir(pack_dir)?);
         let activation = graph_core.activation();
@@ -217,7 +242,7 @@ impl SandboxDemoQueryEngine {
         let popularity = min_max(&run_sets.iter().map(|r| r.len() as f32).collect::<Vec<_>>());
         let documents: Vec<String> = resource_nodes
             .iter()
-            .map(|node| resource_document(&index.resource_profile(*node)))
+            .map(|node| prefix.document(resource_document(&index.resource_profile(*node))))
             .collect();
 
         let started = Instant::now();
@@ -280,6 +305,12 @@ impl SandboxDemoQueryEngine {
             intent_lambda = intent.lambda,
             "sandbox demo intent routing"
         );
+        info!(
+            embed_prefix = prefix.label(),
+            query_prefix = ?prefix.query_prefix(),
+            document_prefix = ?prefix.document_prefix(),
+            "sandbox demo embedding prefix"
+        );
 
         let query_embedder = QueryEmbedder::new(
             embedding.clone(),
@@ -298,6 +329,7 @@ impl SandboxDemoQueryEngine {
             query_embedder,
             scoring,
             intent,
+            prefix,
             run_sets,
             popularity,
         })
@@ -424,7 +456,12 @@ impl SandboxDemoQueryEngine {
 
         // 1-2. embed the question, retrieve by semantic cosine ------------
         let semantic_started = Instant::now();
-        let (question, query_embedding) = self.query_embedder.embed(&request.query).await?;
+        // The cache keys on the prefixed text; the lexicon below sees the
+        // raw question.
+        let (question, query_embedding) = self
+            .query_embedder
+            .embed(&self.prefix.query(&request.query))
+            .await?;
         let provider_embed_ms = ms_since(semantic_started);
 
         let scan_started = Instant::now();
@@ -905,13 +942,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// [`KeywordEmbedder`] that counts provider calls, can stall so
+    /// [`KeywordEmbedder`] that counts provider calls, records every text
+    /// it was sent, can stall so
     /// concurrent callers overlap, and can refuse (or panic on) texts
     /// containing `boom`.
     #[derive(Default)]
     pub(crate) struct CountingEmbedder {
         pub(crate) calls: std::sync::atomic::AtomicUsize,
         pub(crate) batch_sizes: std::sync::Mutex<Vec<usize>>,
+        pub(crate) texts: std::sync::Mutex<Vec<String>>,
         pub(crate) delay_ms: u64,
         pub(crate) fail_boom: std::sync::atomic::AtomicBool,
         pub(crate) panic_boom: std::sync::atomic::AtomicBool,
@@ -947,6 +986,7 @@ pub(crate) mod tests {
         async fn embed(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, LlmError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.batch_sizes.lock().unwrap().push(texts.len());
+            self.texts.lock().unwrap().extend(texts.iter().cloned());
             if self.delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
             }
@@ -2282,6 +2322,133 @@ pub(crate) mod tests {
         assert_eq!(
             final_ids, semantic_ids,
             "structural weight 0 keeps the semantic order"
+        );
+    }
+
+    async fn prefix_engine(
+        dir: &TempDir,
+        embedder: &Arc<CountingEmbedder>,
+        routing: Option<&str>,
+        prefix: Option<&str>,
+    ) -> SandboxDemoQueryEngine {
+        let provider: Arc<dyn EmbeddingProvider> = embedder.clone();
+        SandboxDemoQueryEngine::load_with_prefix(
+            dir.path(),
+            provider,
+            QueryEmbedConfig::default(),
+            ScoringConfig::default(),
+            crate::sandbox_demo::intent::IntentConfig::parse(routing, None, None).unwrap(),
+            EmbedPrefix::parse(prefix).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn sent(embedder: &CountingEmbedder) -> Vec<String> {
+        embedder.texts.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn an_unset_or_none_prefix_is_byte_identical_to_the_default() {
+        for (snapshot, query, golden) in default_goldens() {
+            let dir = write_pack(&snapshot);
+            let reference = CountingEmbedder::stalling(0);
+            let baseline = counting_engine(&dir, &reference, QueryEmbedConfig::default()).await;
+            baseline.query(&question(query)).await.unwrap();
+            for prefix in [None, Some(""), Some("none"), Some("custom:|")] {
+                let embedder = CountingEmbedder::stalling(0);
+                let engine = prefix_engine(&dir, &embedder, None, prefix).await;
+                let response = engine.query(&question(query)).await.unwrap();
+                assert_eq!(stable_bytes(&response), golden, "{prefix:?} {query}");
+                assert_eq!(sent(&embedder), sent(&reference), "{prefix:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nomic_prefixes_every_document_and_the_question() {
+        let dir = write_pack(&snapshot_json());
+        let raw = CountingEmbedder::stalling(0);
+        counting_engine(&dir, &raw, QueryEmbedConfig::default()).await;
+        let raw_documents = sent(&raw);
+
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = prefix_engine(&dir, &embedder, None, Some("nomic")).await;
+        let documents = sent(&embedder);
+        assert_eq!(documents.len(), raw_documents.len());
+        for (prefixed, raw) in documents.iter().zip(&raw_documents) {
+            assert_eq!(prefixed, &format!("search_document: {raw}"));
+        }
+
+        engine.query(&hero_query()).await.unwrap();
+        let texts = sent(&embedder);
+        assert_eq!(texts.len(), documents.len() + 1);
+        assert_eq!(
+            texts.last().unwrap(),
+            &format!("search_query: {}", hero_query().query)
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_prefixes_are_applied_verbatim_to_both_sides() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = prefix_engine(&dir, &embedder, None, Some("custom:Q> |D> ")).await;
+        let documents = sent(&embedder);
+        assert!(
+            documents.iter().all(|d| d.starts_with("D> ")),
+            "{documents:?}"
+        );
+        engine.query(&hero_query()).await.unwrap();
+        assert_eq!(
+            sent(&embedder).last().unwrap(),
+            &format!("Q> {}", hero_query().query)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prefixed_question_is_cached_under_its_prefixed_text() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = prefix_engine(&dir, &embedder, None, Some("nomic")).await;
+        let after_prewarm = embedder.calls();
+        let cold = engine.query(&hero_query()).await.unwrap();
+        let warm = engine.query(&hero_query()).await.unwrap();
+        assert_eq!(cold.timings.query_embedding, QueryEmbeddingSource::Miss);
+        assert_eq!(warm.timings.query_embedding, QueryEmbeddingSource::Hit);
+        assert_eq!(embedder.calls(), after_prewarm + 1);
+        assert_eq!(engine.query_embedder.cached_entries().0, 1);
+
+        // The raw question is a different key from the prefixed one.
+        let (_, raw) = engine
+            .query_embedder
+            .embed(&hero_query().query)
+            .await
+            .unwrap();
+        assert_eq!(raw, QueryEmbeddingSource::Miss);
+        assert_eq!(engine.query_embedder.cached_entries().0, 2);
+    }
+
+    #[tokio::test]
+    async fn the_intent_lexicon_sees_the_raw_question() {
+        let dir = write_pack(&snapshot_json());
+        // A query prefix that would itself match the next-touch lexicon.
+        let prefix = Some("custom:What will it touch next? |");
+        assert!(crate::sandbox_demo::intent::is_next_touch(
+            &EmbedPrefix::parse(prefix)
+                .unwrap()
+                .query(&hero_query().query)
+        ));
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = prefix_engine(&dir, &embedder, Some("next_touch"), prefix).await;
+
+        let hero = engine.query(&hero_query()).await.unwrap();
+        assert_eq!(hero.intent, Some(None), "the prefix must not route");
+        let routed = engine.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(routed.intent, Some(Some("next_touch".to_string())));
+        assert_eq!(
+            sent(&embedder).last().unwrap(),
+            &format!("What will it touch next? {NEXT_TOUCH_QUERY}")
         );
     }
 }

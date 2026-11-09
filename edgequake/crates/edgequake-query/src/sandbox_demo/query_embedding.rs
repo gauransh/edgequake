@@ -445,4 +445,35 @@ mod tests {
         let norm: f32 = cold.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-6);
     }
+
+    #[tokio::test]
+    async fn prefix_modes_never_share_a_cache_entry() {
+        use crate::sandbox_demo::embed_prefix::EmbedPrefix;
+
+        let provider = CountingEmbedder::stalling(0);
+        let cache = embedder(&provider, QueryEmbedConfig::default());
+        let modes = [
+            EmbedPrefix::None,
+            EmbedPrefix::Nomic,
+            EmbedPrefix::parse(Some("custom:q: |d: ")).unwrap(),
+        ];
+        for mode in &modes {
+            let text = mode.query("refused risk");
+            assert_eq!(source(&cache, &text).await, QueryEmbeddingSource::Miss);
+        }
+        assert_eq!(cache.cached_entries().0, modes.len());
+        assert_eq!(provider.calls(), modes.len());
+        for mode in &modes {
+            let text = mode.query("refused risk");
+            assert_eq!(source(&cache, &text).await, QueryEmbeddingSource::Hit);
+        }
+        assert_eq!(
+            *provider.texts.lock().unwrap(),
+            vec![
+                "refused risk".to_string(),
+                "search_query: refused risk".to_string(),
+                "q: refused risk".to_string(),
+            ]
+        );
+    }
 }

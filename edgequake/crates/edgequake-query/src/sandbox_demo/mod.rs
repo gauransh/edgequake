@@ -29,6 +29,9 @@
 //! queries matching a fixed next-touch lexicon to a spread-matched
 //! semantic + structural blend. See [`intent`].
 //!
+//! `EDGEQUAKE_SANDBOX_EMBED_PREFIX=nomic` (none by default) prepends the
+//! model's task prefixes before embedding. See [`embed_prefix`].
+//!
 //! This is a focused query adapter, not a storage migration. The same
 //! [`itsm_graph_core::serving::embedded_runtime::EmbeddedGraphCoreRuntime`]
 //! interface is what would later slot into EdgeQuake Local mode between
@@ -36,6 +39,7 @@
 //! exists in `engine_impl::modes::local`.
 
 pub mod documents;
+pub mod embed_prefix;
 pub mod engine;
 pub mod error;
 pub mod intent;
@@ -44,6 +48,7 @@ pub mod snapshot;
 pub mod structural;
 pub mod types;
 
+pub use embed_prefix::{EmbedPrefix, EMBED_PREFIX_ENV};
 pub use engine::{SandboxDemoQueryEngine, PACK_DIR_ENV};
 pub use error::{Result, SandboxDemoError};
 pub use intent::{
