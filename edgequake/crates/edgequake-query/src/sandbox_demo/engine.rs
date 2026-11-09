@@ -44,6 +44,7 @@ use super::embed_prefix::EmbedPrefix;
 use super::error::{Result, SandboxDemoError};
 use super::intent::{spread_matched, IntentConfig, IntentRouting};
 use super::query_embedding::{QueryEmbedConfig, QueryEmbedder};
+use super::query_tokens::QueryTokens;
 use super::snapshot::{SandboxSnapshotIndex, AGENT_TYPE, INITIATED};
 use super::structural::{min_max, ScorerKind, ScoringConfig, StructuralScorer};
 use super::types::{
@@ -71,6 +72,7 @@ pub struct SandboxDemoQueryEngine {
     scoring: ScoringConfig,
     intent: IntentConfig,
     prefix: EmbedPrefix,
+    query_tokens: QueryTokens,
     /// Distinct runs touching each resource, parallel to
     /// [`Self::resource_nodes`].
     run_sets: Vec<BTreeSet<u32>>,
@@ -88,6 +90,7 @@ impl std::fmt::Debug for SandboxDemoQueryEngine {
             .field("embedding_model", &self.embedding_model)
             .field("structural_scorer", &self.scoring.scorer.label())
             .field("embed_prefix", &self.prefix.label())
+            .field("query_tokens", &self.query_tokens.label())
             .finish()
     }
 }
@@ -148,13 +151,14 @@ impl SandboxDemoQueryEngine {
         embedding: Arc<dyn EmbeddingProvider>,
         query_embed: QueryEmbedConfig,
     ) -> Result<Self> {
-        Self::load_with_prefix(
+        Self::load_with_query_tokens(
             pack_dir,
             embedding,
             query_embed,
             ScoringConfig::from_env()?,
             IntentConfig::from_env()?,
             EmbedPrefix::from_env()?,
+            QueryTokens::from_env()?,
         )
         .await
     }
@@ -197,7 +201,8 @@ impl SandboxDemoQueryEngine {
         .await
     }
 
-    /// [`Self::load_with_intent`] with an explicit embedding prefix.
+    /// [`Self::load_with_intent`] with an explicit embedding prefix and
+    /// the question untouched.
     pub async fn load_with_prefix(
         pack_dir: &Path,
         embedding: Arc<dyn EmbeddingProvider>,
@@ -205,6 +210,28 @@ impl SandboxDemoQueryEngine {
         scoring: ScoringConfig,
         intent: IntentConfig,
         prefix: EmbedPrefix,
+    ) -> Result<Self> {
+        Self::load_with_query_tokens(
+            pack_dir,
+            embedding,
+            query_embed,
+            scoring,
+            intent,
+            prefix,
+            QueryTokens::None,
+        )
+        .await
+    }
+
+    /// [`Self::load_with_prefix`] with explicit question token expansion.
+    pub async fn load_with_query_tokens(
+        pack_dir: &Path,
+        embedding: Arc<dyn EmbeddingProvider>,
+        query_embed: QueryEmbedConfig,
+        scoring: ScoringConfig,
+        intent: IntentConfig,
+        prefix: EmbedPrefix,
+        query_tokens: QueryTokens,
     ) -> Result<Self> {
         let graph_core = Arc::new(EmbeddedGraphCoreRuntime::load_dir(pack_dir)?);
         let activation = graph_core.activation();
@@ -311,6 +338,10 @@ impl SandboxDemoQueryEngine {
             document_prefix = ?prefix.document_prefix(),
             "sandbox demo embedding prefix"
         );
+        info!(
+            query_tokens = query_tokens.label(),
+            "sandbox demo query tokens"
+        );
 
         let query_embedder = QueryEmbedder::new(
             embedding.clone(),
@@ -330,6 +361,7 @@ impl SandboxDemoQueryEngine {
             scoring,
             intent,
             prefix,
+            query_tokens,
             run_sets,
             popularity,
         })
@@ -456,11 +488,11 @@ impl SandboxDemoQueryEngine {
 
         // 1-2. embed the question, retrieve by semantic cosine ------------
         let semantic_started = Instant::now();
-        // The cache keys on the prefixed text; the lexicon below sees the
-        // raw question.
+        // The cache keys on the expanded, prefixed text; the lexicon below
+        // sees the raw question.
         let (question, query_embedding) = self
             .query_embedder
-            .embed(&self.prefix.query(&request.query))
+            .embed(&self.prefix.query(&self.query_tokens.expand(&request.query)))
             .await?;
         let provider_embed_ms = ms_since(semantic_started);
 
@@ -2450,5 +2482,92 @@ pub(crate) mod tests {
             sent(&embedder).last().unwrap(),
             &format!("What will it touch next? {NEXT_TOUCH_QUERY}")
         );
+    }
+
+    async fn tokens_engine(
+        dir: &TempDir,
+        embedder: &Arc<CountingEmbedder>,
+        routing: Option<&str>,
+        prefix: Option<&str>,
+        tokens: Option<&str>,
+    ) -> SandboxDemoQueryEngine {
+        let provider: Arc<dyn EmbeddingProvider> = embedder.clone();
+        SandboxDemoQueryEngine::load_with_query_tokens(
+            dir.path(),
+            provider,
+            QueryEmbedConfig::default(),
+            ScoringConfig::default(),
+            crate::sandbox_demo::intent::IntentConfig::parse(routing, None, None).unwrap(),
+            EmbedPrefix::parse(prefix).unwrap(),
+            crate::sandbox_demo::query_tokens::QueryTokens::parse(tokens).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unset_or_none_query_tokens_are_byte_identical_to_the_default() {
+        for (snapshot, query, golden) in default_goldens() {
+            let dir = write_pack(&snapshot);
+            let reference = CountingEmbedder::stalling(0);
+            let baseline = counting_engine(&dir, &reference, QueryEmbedConfig::default()).await;
+            baseline.query(&question(query)).await.unwrap();
+            for tokens in [None, Some(""), Some("none")] {
+                let embedder = CountingEmbedder::stalling(0);
+                let engine = tokens_engine(&dir, &embedder, None, None, tokens).await;
+                let response = engine.query(&question(query)).await.unwrap();
+                assert_eq!(stable_bytes(&response), golden, "{tokens:?} {query}");
+                assert_eq!(sent(&embedder), sent(&reference), "{tokens:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn path_tokens_expand_only_the_question_before_the_prefix() {
+        let dir = write_pack(&snapshot_json());
+        let raw = CountingEmbedder::stalling(0);
+        counting_engine(&dir, &raw, QueryEmbedConfig::default()).await;
+
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = tokens_engine(&dir, &embedder, None, Some("nomic"), Some("path")).await;
+        let documents = sent(&embedder);
+        assert_eq!(documents.len(), sent(&raw).len());
+        for (prefixed, raw) in documents.iter().zip(&sent(&raw)) {
+            assert_eq!(
+                prefixed,
+                &format!("search_document: {raw}"),
+                "documents are untouched"
+            );
+        }
+
+        engine
+            .query(&question("files claude-code-demo opened"))
+            .await
+            .unwrap();
+        assert_eq!(
+            sent(&embedder).last().unwrap(),
+            "search_query: files claude-code-demo opened claude code demo"
+        );
+        // No path-like word: the question goes out as typed.
+        engine.query(&hero_query()).await.unwrap();
+        assert_eq!(
+            sent(&embedder).last().unwrap(),
+            &format!("search_query: {}", hero_query().query)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_intent_lexicon_ignores_query_tokens() {
+        let dir = write_pack(&snapshot_json());
+        let embedder = CountingEmbedder::stalling(0);
+        let engine = tokens_engine(&dir, &embedder, Some("next_touch"), None, Some("path")).await;
+        let routed = engine.query(&question(NEXT_TOUCH_QUERY)).await.unwrap();
+        assert_eq!(routed.intent, Some(Some("next_touch".to_string())));
+        assert_eq!(
+            sent(&embedder).last().unwrap(),
+            &format!("{NEXT_TOUCH_QUERY} claude code demo")
+        );
+        let hero = engine.query(&hero_query()).await.unwrap();
+        assert_eq!(hero.intent, Some(None));
     }
 }
