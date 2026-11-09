@@ -1,27 +1,34 @@
-//! Opt-in selection of the structural component of the sandbox blend.
+//! Selection of the structural component and the weights of the sandbox
+//! blend.
 //!
-//! By default the structural score is the embedded runtime's own
-//! anchor-to-candidate cosine and the blend uses the bundle's frozen
-//! weights — exactly what the runtime returns, untouched. Offline
-//! evaluation found that cosine below random on "which resources will this
-//! agent touch next", so these knobs let the demo swap in other evidence
-//! and measure it against labels, without changing the default:
+//! By default the blend is `semantic=1.0, structural=0.0`. On a
+//! pre-registered gold relevance set, semantic-only ranking beat the
+//! bundle's frozen `0.6 / 0.4` blend by +0.113 nDCG@5 on holdout (CI
+//! `[+0.030, +0.214]`), and no structural arm tried beat semantic-only
+//! (crystalos-ai/itsm-graph-core #226/#227). graph-core still loads,
+//! validates, and reranks every query: the structural score is computed and
+//! returned for transparency, it just carries no weight.
 //!
+//! - [`BLEND_WEIGHTS_ENV`]: unset → `semantic=1,structural=0` (source
+//!   `default`); `bundle` → the bundle's frozen weights from
+//!   `activation.json`, byte-identical to the runtime's own rerank (source
+//!   `bundle`, the rollback switch); `semantic=<w>,structural=<w>` → those
+//!   weights (source `env`).
 //! - [`STRUCTURAL_SCORER_ENV`]: `cosine` (default) | `popularity` |
 //!   `agent_frequency` | `knn` | `blend:<name>=<w>,...`.
-//! - [`BLEND_WEIGHTS_ENV`]: `semantic=<w>,structural=<w>`, overriding the
-//!   bundle's frozen weights.
 //!
-//! Every non-default value still blends through graph-core's
-//! `rerank_with_scores`, so the clamp, weight validation, and tie-break are
-//! the production ones.
+//! Anything other than `bundle` with `cosine` re-blends through
+//! graph-core's `rerank_with_scores`, so the clamp, weight validation, and
+//! tie-break are the production ones.
 
 use super::error::{Result, SandboxDemoError};
 
 /// Selects the structural scorer. Unset means `cosine`.
 pub const STRUCTURAL_SCORER_ENV: &str = "EDGEQUAKE_SANDBOX_STRUCTURAL_SCORER";
-/// Overrides the bundle's frozen blend weights. Unset means the bundle's.
+/// Selects the blend weights. Unset means [`BlendWeightsChoice::Default`].
 pub const BLEND_WEIGHTS_ENV: &str = "EDGEQUAKE_SANDBOX_BLEND_WEIGHTS";
+/// The [`BLEND_WEIGHTS_ENV`] value that restores the bundle's weights.
+pub const BUNDLE_WEIGHTS: &str = "bundle";
 
 const WEIGHT_SUM_TOLERANCE: f32 = 1e-3;
 
@@ -189,14 +196,63 @@ impl WeightOverride {
     }
 }
 
+/// Which blend weights are in force.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BlendWeightsChoice {
+    /// `semantic=1.0, structural=0.0`; [`BLEND_WEIGHTS_ENV`] unset.
+    #[default]
+    Default,
+    /// The bundle's frozen weights; [`BLEND_WEIGHTS_ENV`] = `bundle`.
+    Bundle,
+    /// Explicit `semantic=<w>,structural=<w>`.
+    Env(WeightOverride),
+}
+
+impl BlendWeightsChoice {
+    /// The weights the default applies.
+    pub const SEMANTIC_ONLY: WeightOverride = WeightOverride {
+        semantic: 1.0,
+        structural: 0.0,
+    };
+
+    /// Parse a [`BLEND_WEIGHTS_ENV`] value; blank counts as unset.
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => Ok(Self::Default),
+            Some(BUNDLE_WEIGHTS) => Ok(Self::Bundle),
+            Some(v) => WeightOverride::parse(v).map(Self::Env),
+        }
+    }
+
+    /// The semantic/structural pair, or `None` for the bundle's.
+    pub fn weights(self) -> Option<WeightOverride> {
+        match self {
+            Self::Default => Some(Self::SEMANTIC_ONLY),
+            Self::Bundle => None,
+            Self::Env(w) => Some(w),
+        }
+    }
+
+    /// `default` | `bundle` | `env`, as logged at startup.
+    pub fn source(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Bundle => "bundle",
+            Self::Env(_) => "env",
+        }
+    }
+}
+
 /// The scoring knobs a generation was loaded with.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScoringConfig {
     /// The structural scorer.
     pub scorer: StructuralScorer,
-    /// Replacement blend weights, when set.
-    pub weights: Option<WeightOverride>,
-    /// True when either variable was set, so responses echo the scorer.
+    /// The blend weights.
+    pub weights: BlendWeightsChoice,
+    /// True when the scorer or explicit weights were set, so responses echo
+    /// the scorer. `bundle` alone does not count: the rollback reproduces
+    /// the pre-default response byte for byte.
     pub explicit: bool,
 }
 
@@ -204,14 +260,14 @@ impl ScoringConfig {
     /// Build from the two variables' values; blank counts as unset.
     pub fn parse(scorer: Option<&str>, weights: Option<&str>) -> Result<Self> {
         let scorer = scorer.filter(|v| !v.trim().is_empty());
-        let weights = weights.filter(|v| !v.trim().is_empty());
+        let weights = BlendWeightsChoice::parse(weights)?;
         Ok(Self {
-            explicit: scorer.is_some() || weights.is_some(),
+            explicit: scorer.is_some() || matches!(weights, BlendWeightsChoice::Env(_)),
             scorer: scorer
                 .map(StructuralScorer::parse)
                 .transpose()?
                 .unwrap_or_default(),
-            weights: weights.map(WeightOverride::parse).transpose()?,
+            weights,
         })
     }
 
@@ -222,9 +278,10 @@ impl ScoringConfig {
         Self::parse(scorer.as_deref(), weights.as_deref())
     }
 
-    /// True when the runtime's own rerank is the answer, untouched.
-    pub fn is_default(&self) -> bool {
-        self.scorer == StructuralScorer::default() && self.weights.is_none()
+    /// True when the runtime's own rerank is the answer, untouched: the
+    /// cosine scorer under the bundle's weights.
+    pub fn is_runtime_rerank(&self) -> bool {
+        self.scorer == StructuralScorer::default() && self.weights == BlendWeightsChoice::Bundle
     }
 }
 
@@ -279,18 +336,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unset_and_blank_are_the_default() {
+    fn unset_and_blank_are_semantic_only() {
         for (scorer, weights) in [(None, None), (Some(""), Some("  "))] {
             let config = ScoringConfig::parse(scorer, weights).unwrap();
-            assert!(config.is_default());
+            assert_eq!(config, ScoringConfig::default());
+            assert_eq!(config.weights, BlendWeightsChoice::Default);
+            assert_eq!(config.weights.source(), "default");
+            assert_eq!(
+                config.weights.weights(),
+                Some(WeightOverride {
+                    semantic: 1.0,
+                    structural: 0.0
+                })
+            );
+            assert!(!config.is_runtime_rerank());
             assert!(!config.explicit);
         }
     }
 
     #[test]
-    fn explicit_cosine_is_default_scoring_but_echoed() {
+    fn bundle_is_the_runtime_rerank_and_not_echoed() {
+        for value in ["bundle", " bundle "] {
+            let config = ScoringConfig::parse(None, Some(value)).unwrap();
+            assert_eq!(config.weights, BlendWeightsChoice::Bundle);
+            assert_eq!(config.weights.source(), "bundle");
+            assert_eq!(config.weights.weights(), None);
+            assert!(config.is_runtime_rerank());
+            assert!(!config.explicit);
+        }
+        let echoed = ScoringConfig::parse(Some("cosine"), Some("bundle")).unwrap();
+        assert!(echoed.is_runtime_rerank());
+        assert!(echoed.explicit);
+        let popular = ScoringConfig::parse(Some("popularity"), Some("bundle")).unwrap();
+        assert!(!popular.is_runtime_rerank());
+    }
+
+    #[test]
+    fn explicit_cosine_is_semantic_only_but_echoed() {
         let config = ScoringConfig::parse(Some("cosine"), None).unwrap();
-        assert!(config.is_default());
+        assert_eq!(config.weights, BlendWeightsChoice::Default);
+        assert!(!config.is_runtime_rerank());
         assert!(config.explicit);
     }
 
@@ -349,12 +434,24 @@ mod tests {
             "semantic=0.5,semantic=0.5",
             "semantic=NaN,structural=1",
             "0.5,0.5",
+            "Bundle",
+            "bundle,semantic=1",
         ] {
             let err = WeightOverride::parse(bad).unwrap_err();
             assert!(matches!(err, SandboxDemoError::Config(_)), "{bad}: {err:?}");
+            let err = ScoringConfig::parse(None, Some(bad)).unwrap_err();
+            assert!(matches!(err, SandboxDemoError::Config(_)), "{bad}: {err:?}");
         }
-        let config = ScoringConfig::parse(None, Some("semantic=1,structural=0")).unwrap();
-        assert!(!config.is_default());
+        let config = ScoringConfig::parse(None, Some("semantic=0.3,structural=0.7")).unwrap();
+        assert_eq!(
+            config.weights,
+            BlendWeightsChoice::Env(WeightOverride {
+                semantic: 0.3,
+                structural: 0.7
+            })
+        );
+        assert_eq!(config.weights.source(), "env");
+        assert!(!config.is_runtime_rerank());
         assert!(config.explicit);
     }
 

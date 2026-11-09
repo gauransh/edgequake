@@ -71,12 +71,8 @@ async fn demo_manifest(
         "relationships": engine.index().edge_count(),
         "resources": engine.index().resources().len(),
         "anchors": engine.anchor_candidates(),
-        "weights": {
-            "semantic": activation.weights.semantic,
-            "graph": activation.weights.graph,
-            "structural": activation.weights.structural,
-            "link": activation.weights.link,
-        },
+        // The weights every query applies, not just the bundle's.
+        "weights": engine.blend_weights(),
         "commits": {
             "sandbox": activation.sandbox_commit,
             "graph_core": activation.graph_core_commit,
