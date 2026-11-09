@@ -3484,6 +3484,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "itsm-graph-core"
 version = "0.1.0"
+source = "git+https://github.com/crystalos-ai/itsm-graph-core?rev=9985e778651b4336affa3ad25be59695e3d5164d#9985e778651b4336affa3ad25be59695e3d5164d"
 dependencies = [
  "async-trait",
  "candle-core",
@@ -3494,10 +3495,10 @@ dependencies = [
  "safetensors",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]

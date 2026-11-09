@@ -20,6 +20,7 @@
 //! - [`BR0441`]: Optional feature toggles (CORS, compression, Swagger)
 
 use std::net::SocketAddr;
+#[cfg(feature = "sandbox-demo")]
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
@@ -36,6 +37,7 @@ use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+#[cfg(feature = "sandbox-demo")]
 use edgequake_query::sandbox_demo::SandboxDemoQueryEngine;
 
 use crate::observability_middleware::observability_middleware;
@@ -104,6 +106,7 @@ pub struct Server {
     /// The CrystalOS sandbox demo, when EdgeQuake was started with an
     /// activation bundle. `None` is the ordinary case and simply means the
     /// demo routes do not exist; it is never a degraded demo.
+    #[cfg(feature = "sandbox-demo")]
     sandbox_demo: Option<Arc<SandboxDemoQueryEngine>>,
 }
 
@@ -113,6 +116,7 @@ impl Server {
         Self {
             config,
             state,
+            #[cfg(feature = "sandbox-demo")]
             sandbox_demo: None,
         }
     }
@@ -122,6 +126,7 @@ impl Server {
     /// The engine is loaded before the server is built (loading it embeds
     /// every resource document), so a bad pack aborts startup rather than
     /// producing a server whose demo route fails on first use.
+    #[cfg(feature = "sandbox-demo")]
     pub fn with_sandbox_demo(mut self, engine: Arc<SandboxDemoQueryEngine>) -> Self {
         self.sandbox_demo = Some(engine);
         self
@@ -131,6 +136,7 @@ impl Server {
     pub fn build_router(&self) -> axum::Router {
         let mut app = create_router(self.state.clone());
 
+        #[cfg(feature = "sandbox-demo")]
         if let Some(engine) = &self.sandbox_demo {
             app = app.merge(crate::handlers::sandbox_demo::routes(Arc::clone(engine)));
         }

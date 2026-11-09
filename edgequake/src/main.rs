@@ -8,6 +8,7 @@ use edgequake_api::startup_security::{enforce_startup_security, validate_startup
 #[cfg(feature = "postgres")]
 use edgequake_api::PostgresEntitySink;
 use edgequake_api::{AppState, DocumentTaskProcessor, Server, ServerConfig, StorageMode};
+#[cfg(feature = "sandbox-demo")]
 use edgequake_query::sandbox_demo::SandboxDemoQueryEngine;
 use edgequake_observability::{
     init_observability, record_db_pool_stats, ErrorEvent, ObservabilityConfig,
@@ -986,7 +987,8 @@ async fn main() -> Result<()> {
         &state.security,
     ));
 
-    // CrystalOS sandbox demo (EDGEQUAKE_SANDBOX_PACK_DIR).
+    // CrystalOS sandbox demo (EDGEQUAKE_SANDBOX_PACK_DIR), compiled in only
+    // with the `sandbox-demo` feature.
     //
     // Unset — the ordinary case — and the demo routes simply do not exist.
     // Set, and the activation bundle MUST load: on that path graph-core is
@@ -994,6 +996,7 @@ async fn main() -> Result<()> {
     // the model would be worse than one that refused to come up at all.
     // Loading also embeds one document per governed resource, so the first
     // query on stage is warm.
+    #[cfg(feature = "sandbox-demo")]
     let sandbox_demo = SandboxDemoQueryEngine::from_env(Arc::clone(&state.query.embedding_provider))
         .await
         .with_context(|| {
@@ -1003,6 +1006,7 @@ async fn main() -> Result<()> {
             )
         })?
         .map(Arc::new);
+    #[cfg(feature = "sandbox-demo")]
     if let Some(engine) = &sandbox_demo {
         info!(
             "Sandbox demo enabled: POST /api/v1/query/sandbox-demo, page at /demo/sandbox ({:?})",
@@ -1011,7 +1015,9 @@ async fn main() -> Result<()> {
     }
 
     // Run server (this blocks until shutdown)
+    #[cfg_attr(not(feature = "sandbox-demo"), allow(unused_mut))]
     let mut server = Server::new(config, state);
+    #[cfg(feature = "sandbox-demo")]
     if let Some(engine) = sandbox_demo {
         server = server.with_sandbox_demo(engine);
     }

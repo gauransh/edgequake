@@ -10,6 +10,9 @@ description = "Query engine for EdgeQuake RAG system"
 [features]
 default = []
 postgres = ["dep:sqlx"]
+# CrystalOS sandbox demo: the embedded graph-core rerank path. Pulls in the
+# private itsm-graph-core git dependency, so it is never on by default.
+sandbox-demo = ["dep:itsm-graph-core"]
 
 [dependencies]
 edgequake-storage = { path = "../edgequake-storage", default-features = false }
@@ -17,19 +20,22 @@ edgequake-llm = { workspace = true }
 
 # Embedded graph-core: the sandbox demo query path reranks IN THIS PROCESS,
 # so the reranker is a linked library, not an HTTP service. Only the Candle
-# backend and the EdgeQuake DTO adapter are enabled — none of the AWS,
-# pgvector, Redis, or Ollama adapters are pulled in, and nothing here can
-# make a network call.
+# backend is enabled — none of the AWS adapters are pulled in, and nothing
+# here can make a network call.
 #
-# Pinned to itsm-graph-core c6cc1d4c27e961b4553e0c78ffcf474531338c20
-# ("feat(serving): embedded, fail-closed graph-core runtime for in-process
-# rerank"). This is a documented sibling-checkout path dependency for the
-# one-day demo build; the committed integration should ultimately pin a
-# graph-core revision through a git dependency.
-itsm-graph-core = { path = "../../../../itsm-graph-core/crates/itsm-graph-core", default-features = false, features = [
+# OPTIONAL, behind the `sandbox-demo` feature (off by default): graph-core is
+# a private repository, so the default build — public CI, edgequake-main —
+# never resolves into it at compile time.
+#
+# Pinned to crystalos-ai/itsm-graph-core main @ 9985e778651b4336affa3ad25be59695e3d5164d.
+# To develop against a local checkout instead, add to the WORKSPACE root
+# Cargo.toml (edgequake/Cargo.toml), without committing it:
+#
+#   [patch."https://github.com/crystalos-ai/itsm-graph-core"]
+#   itsm-graph-core = { path = "../../itsm-graph-core/crates/itsm-graph-core" }
+itsm-graph-core = { git = "https://github.com/crystalos-ai/itsm-graph-core", rev = "9985e778651b4336affa3ad25be59695e3d5164d", default-features = false, features = [
     "backend-candle",
-    "adapter-edgequake",
-] }
+], optional = true }
 
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
