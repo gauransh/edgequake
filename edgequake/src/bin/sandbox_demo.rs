@@ -56,6 +56,14 @@ async fn main() -> Result<()> {
     let embedding = create_safe_embedding_provider(&provider, &model, dimension)
         .map_err(|e| anyhow::anyhow!(e.to_string()))
         .with_context(|| format!("building the {provider} embedding provider ({model})"))?;
+    // The Ollama provider takes its width from OLLAMA_EMBEDDING_DIMENSIONS (default 768), not
+    // from the dimension passed above, so a 1024-d model would silently run truncated to 768.
+    anyhow::ensure!(
+        embedding.dimension() == dimension,
+        "{DIMENSION_ENV}={dimension} but the {provider} provider embeds at {} dimensions; \
+         for ollama also set OLLAMA_EMBEDDING_DIMENSIONS={dimension}",
+        embedding.dimension()
+    );
 
     // Loading embeds one document per governed resource, so a bad pack — or an
     // unreachable embedding provider — fails here rather than on stage.
