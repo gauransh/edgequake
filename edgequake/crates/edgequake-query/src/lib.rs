@@ -74,6 +74,7 @@ pub mod mix_weights;
 pub mod modes;
 pub mod path_prune;
 pub mod query_reliability;
+#[cfg(feature = "sandbox-demo")]
 pub mod sandbox_demo;
 pub mod sparse_retrieval;
 pub mod tokenizer;
@@ -103,6 +104,7 @@ pub use mix_weights::MixWeightOverride;
 pub use modes::QueryMode;
 pub use path_prune::PathPruneConfig;
 pub use query_reliability::{classify_query_failure, query_failure_diagnostic, QueryFailureClass};
+#[cfg(feature = "sandbox-demo")]
 pub use sandbox_demo::{
     SandboxDemoQueryEngine, SandboxDemoRequest, SandboxDemoResponse, SandboxDemoResult,
     SandboxSnapshotIndex,

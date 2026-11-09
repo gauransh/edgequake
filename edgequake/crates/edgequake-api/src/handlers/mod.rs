@@ -94,6 +94,7 @@ pub mod query;
 pub mod query_types;
 pub mod relationships;
 pub mod relationships_types;
+#[cfg(feature = "sandbox-demo")]
 pub mod sandbox_demo;
 pub mod settings;
 pub mod tasks;

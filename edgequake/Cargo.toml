@@ -31,6 +31,7 @@ path = "src/main.rs"
 [[bin]]
 name = "edgequake-sandbox-demo"
 path = "src/bin/sandbox_demo.rs"
+required-features = ["sandbox-demo"]
 
 [[example]]
 name = "basic_rag"
@@ -53,6 +54,9 @@ default = ["postgres", "vision"]
 otel = ["edgequake-observability/otel", "edgequake-api/otel"]
 postgres = ["edgequake-api/postgres", "edgequake-storage/postgres"]
 vision = ["edgequake-api/vision"]
+# CrystalOS sandbox demo (EDGEQUAKE_SANDBOX_PACK_DIR). Off by default: it
+# needs the private crystalos-ai/itsm-graph-core git dependency.
+sandbox-demo = ["edgequake-api/sandbox-demo", "edgequake-query/sandbox-demo"]
 
 [dependencies]
 edgequake-core = { workspace = true, features = ["pipeline"] }

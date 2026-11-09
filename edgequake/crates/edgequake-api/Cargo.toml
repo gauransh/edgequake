@@ -16,6 +16,8 @@ postgres = ["edgequake-storage/postgres", "edgequake-core/postgres", "dep:sqlx"]
 pipeline = ["edgequake-core/pipeline"]
 # Vision mode for PDF extraction using edgequake-pdf2md (bundled pdfium, no system deps)
 vision = []
+# CrystalOS sandbox demo routes (requires the private itsm-graph-core).
+sandbox-demo = ["edgequake-query/sandbox-demo"]
 
 [dependencies]
 edgequake-core = { path = "../edgequake-core" }
