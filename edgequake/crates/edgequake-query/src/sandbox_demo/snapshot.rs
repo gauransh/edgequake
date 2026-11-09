@@ -404,8 +404,18 @@ impl SandboxSnapshotIndex {
         }
     }
 
+    /// The distinct runs with a permitted or refused access edge into
+    /// `resource`.
+    pub fn runs_touching(&self, resource: u32) -> BTreeSet<u32> {
+        self.edges(resource)
+            .iter()
+            .filter(|e| !e.outgoing && matches!(&*e.relation, ALLOWED_ACCESS | DENIED_ACCESS))
+            .map(|e| e.other)
+            .collect()
+    }
+
     /// The runs an agent profile initiated.
-    fn runs_of_agent(&self, agent: u32) -> BTreeSet<u32> {
+    pub fn runs_of_agent(&self, agent: u32) -> BTreeSet<u32> {
         self.edges(agent)
             .iter()
             .filter(|e| e.outgoing && &*e.relation == INITIATED)

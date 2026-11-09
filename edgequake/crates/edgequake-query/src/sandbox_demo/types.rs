@@ -170,6 +170,13 @@ pub struct SandboxDemoResponse {
     /// not know the field still parse, and older servers yield defaults.
     #[serde(default)]
     pub timings: StageTimings,
+    /// The opt-in structural scorer, e.g. `popularity` or
+    /// `blend:knn=0.5,popularity=0.5`. Present only when
+    /// `EDGEQUAKE_SANDBOX_STRUCTURAL_SCORER` or
+    /// `EDGEQUAKE_SANDBOX_BLEND_WEIGHTS` was set, so the default response
+    /// is byte-identical to before the knob existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_scorer: Option<String>,
     /// The graph-core-approved order, truncated to `top_k`.
     pub results: Vec<SandboxDemoResult>,
     /// The semantic-only order over the same candidate set, for contrast.

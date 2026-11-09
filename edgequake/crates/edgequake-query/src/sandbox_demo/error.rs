@@ -65,6 +65,11 @@ pub enum SandboxDemoError {
     #[error("embedding provider: {0}")]
     Embedding(String),
 
+    /// A scoring environment variable is malformed; the demo refuses to
+    /// start rather than serve a scorer nobody asked for.
+    #[error("sandbox scoring config: {0}")]
+    Config(String),
+
     /// The request was rejected before any work happened.
     #[error("{0}")]
     BadRequest(String),
