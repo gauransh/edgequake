@@ -179,6 +179,13 @@ pub struct SandboxDemoResponse {
     /// knob existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structural_scorer: Option<String>,
+    /// The routed query intent. Absent when
+    /// `EDGEQUAKE_SANDBOX_INTENT_ROUTING` is off (the default), so that
+    /// response is byte-identical to before the knob existed; with routing
+    /// on, `"next_touch"` when the query matched the intent lexicon and
+    /// `null` when it took the default path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<Option<String>>,
     /// The graph-core-approved order, truncated to `top_k`.
     pub results: Vec<SandboxDemoResult>,
     /// The semantic-only order over the same candidate set, for contrast.
