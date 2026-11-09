@@ -32,6 +32,10 @@
 //! `EDGEQUAKE_SANDBOX_EMBED_PREFIX=nomic` (none by default) prepends the
 //! model's task prefixes before embedding. See [`embed_prefix`].
 //!
+//! `EDGEQUAKE_SANDBOX_QUERY_TOKENS=path` (none by default) appends the
+//! tokens of path-like question words before embedding. See
+//! [`query_tokens`].
+//!
 //! This is a focused query adapter, not a storage migration. The same
 //! [`itsm_graph_core::serving::embedded_runtime::EmbeddedGraphCoreRuntime`]
 //! interface is what would later slot into EdgeQuake Local mode between
@@ -44,6 +48,7 @@ pub mod engine;
 pub mod error;
 pub mod intent;
 pub mod query_embedding;
+pub mod query_tokens;
 pub mod snapshot;
 pub mod structural;
 pub mod types;
@@ -59,6 +64,7 @@ pub use query_embedding::{
     QueryEmbedConfig, DEFAULT_QUERY_EMBED_CACHE_BYTES, DEFAULT_QUERY_EMBED_CACHE_ENTRIES,
     QUERY_EMBED_CACHE_BYTES_ENV, QUERY_EMBED_CACHE_ENV,
 };
+pub use query_tokens::{QueryTokens, QUERY_TOKENS_ENV};
 pub use snapshot::{
     EvidencePath, GraphNode, GraphProjection, ResourceProfile, SandboxSnapshotIndex, SnapshotEdge,
     SnapshotNode,
